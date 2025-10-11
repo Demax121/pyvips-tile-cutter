@@ -1,0 +1,15 @@
+{
+  "levels": [
+    {"name": "zoom 0 (256x256)", "width": 256, "height": 256},
+    {"name": "zoom 1 (512x512)", "width": 512, "height": 512},
+    {"name": "zoom 2 (1024x1024)", "width": 1024, "height": 1024},
+    {"name": "zoom 3 (2048x2048)", "width": 2048, "height": 2048},
+    {"name": "zoom 4 (4096x4096)", "width": 4096, "height": 4096},
+    {"name": "zoom 5 (8192x8192)", "width": 8192, "height": 8192},
+    {"name": "zoom 6 (16384x16384)", "width": 16384, "height": 16384},
+    {"name": "zoom 7 (32768x32768)", "width": 32768, "height": 32768},
+    {"name": "zoom 8 (65536x65536)", "width": 65536, "height": 65536},
+    {"name": "zoom 9 (131072x131072)", "width": 131072, "height": 131072},
+    {"name": "zoom 10 (262144x262144)", "width": 262144, "height": 262144}
+  ]
+}

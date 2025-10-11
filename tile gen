@@ -1,0 +1,21 @@
+vips dzsave "%source_dir%\!selected_file!" "%destination_dir%\!selected_file!"
+
+
+
+opcje dla tyles do wyboru: layout
+rozszerzenie dla tiles/images: suffix[Q=80]
+
+
+flagi:
+
+--centre zawsze
+--depth onetile zawsze
+--background 0 zawsze
+--tile-size 256 zawsze
+--overlap 2
+--region_shrink: mode
+--skip_blanks: 5
+--layout do wyboru
+--suffix do wyboru wraz z jakością.
+
+vips dzsave "%source_dir%\!selected_file!" "%destination_dir%\!selected_file!" --layout dz --centre --suffix ".webp[Q=80]" --depth onetile --background 0 --tile-size 256 --overlap 2 --region-shrink mode --skip-blanks 5
