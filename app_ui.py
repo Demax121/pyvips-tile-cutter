@@ -582,6 +582,12 @@ class MainWindow(QMainWindow):
         buttons_row = QHBoxLayout()
         buttons_row.setSpacing(10)
         buttons_row.addWidget(self.generate_image, stretch=1)
+
+        # Reset button to clear loaded image buffer and viewer
+        self.reset = QPushButton("Reset")
+        self.reset.setObjectName("reset")
+        buttons_row.addWidget(self.reset, stretch=1)
+
         buttons_row.addWidget(self.generate_tiles, stretch=1)
         controls_layout.addLayout(buttons_row)
 
