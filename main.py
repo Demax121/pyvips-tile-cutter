@@ -9,7 +9,7 @@ import pyvips
 # Raise Qt image I/O allocation cap BEFORE importing any PyQt6 modules
 os.environ["QT_IMAGEIO_MAXALLOC"] = str(2 * 1024 * 1024 * 1024)  # 2 GiB
 
-from typing import List, Optional
+from typing import List, Optional, Dict
 from pathlib import Path
 import json
 from PyQt6.QtWidgets import QApplication, QFileDialog
@@ -319,15 +319,26 @@ def encode_output_image(img: pyvips.Image, fmt: str, quality: int) -> bytes:
 	- jpg: use Q=quality, flatten alpha to white background
 	"""
 	fmt = fmt.lower()
+
+	def _save_with_retry(image: pyvips.Image, method_name: str, *args, **kwargs):
+		try:
+			return getattr(image, method_name)(*args, **kwargs)
+		except Exception as e1:
+			# Retry by materializing to memory to avoid out-of-order read errors
+			try:
+				mem = image.copy(memory=True)
+				return getattr(mem, method_name)(*args, **kwargs)
+			except Exception:
+				raise e1
 	if fmt == "png":
 		# Map quality to PNG compression (inverse relation)
 		comp = int(round((100 - quality) * 9 / 99))
 		comp = max(0, min(9, comp))
 		rgba = ensure_rgba(img)
-		return rgba.pngsave_buffer(compression=comp)
+		return _save_with_retry(rgba, "pngsave_buffer", compression=comp)
 	if fmt == "webp":
 		rgba = ensure_rgba(img)
-		return rgba.webpsave_buffer(Q=quality)
+		return _save_with_retry(rgba, "webpsave_buffer", Q=quality)
 	if fmt in ("jpg", "jpeg"):
 		# JPEG does not support alpha; flatten over white background
 		base = img
@@ -343,10 +354,10 @@ def encode_output_image(img: pyvips.Image, fmt: str, quality: int) -> bytes:
 			# expand to RGB
 			g = img.extract_band(0)
 			base = pyvips.Image.bandjoin([g, g, g])
-		return base.jpegsave_buffer(Q=quality)
+		return _save_with_retry(base, "jpegsave_buffer", Q=quality)
 	# default png
 	rgba = ensure_rgba(img)
-	return rgba.pngsave_buffer()
+	return _save_with_retry(rgba, "pngsave_buffer")
 
 
 def choose_effective_format(img: pyvips.Image, requested_fmt: str) -> str:
@@ -371,15 +382,24 @@ def choose_effective_format(img: pyvips.Image, requested_fmt: str) -> str:
 def save_output_image_to_file(img: pyvips.Image, path: str, fmt: str, quality: int) -> None:
 	"""Save image directly to a file using streaming encoders to avoid RAM spikes."""
 	fmt = fmt.lower()
+	def _save_with_retry(image: pyvips.Image, method_name: str, *args, **kwargs):
+		try:
+			return getattr(image, method_name)(*args, **kwargs)
+		except Exception as e1:
+			try:
+				mem = image.copy(memory=True)
+				return getattr(mem, method_name)(*args, **kwargs)
+			except Exception:
+				raise e1
 	if fmt == "png":
 		comp = int(round((100 - quality) * 9 / 99))
 		comp = max(0, min(9, comp))
 		rgba = ensure_rgba(img)
-		rgba.pngsave(path, compression=comp)
+		_save_with_retry(rgba, "pngsave", path, compression=comp)
 		return
 	if fmt == "webp":
 		rgba = ensure_rgba(img)
-		rgba.webpsave(path, Q=quality)
+		_save_with_retry(rgba, "webpsave", path, Q=quality)
 		return
 	if fmt in ("jpg", "jpeg"):
 		base = img
@@ -393,11 +413,11 @@ def save_output_image_to_file(img: pyvips.Image, path: str, fmt: str, quality: i
 		elif img.bands < 3:
 			g = img.extract_band(0)
 			base = pyvips.Image.bandjoin([g, g, g])
-		base.jpegsave(path, Q=quality)
+		_save_with_retry(base, "jpegsave", path, Q=quality)
 		return
 	# default png
 	rgba = ensure_rgba(img)
-	rgba.pngsave(path)
+	_save_with_retry(rgba, "pngsave", path)
 
 def _get_tiles_layout(window: app_ui.MainWindow) -> str:
 	"""Return dzsave layout string from UI, defaulting to 'dz'."""
@@ -490,6 +510,45 @@ def main():
 
 	w = app_ui.MainWindow()
 
+	# ---------- settings: load/save default output folders ----------
+	SETTINGS_PATH = Path(__file__).resolve().parent / "settings.json"
+
+	def _load_settings() -> Dict[str, str]:
+		try:
+			with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+				data = json.load(f) or {}
+				return {k: str(v) for k, v in data.items() if isinstance(v, (str, int))}
+		except Exception:
+			return {}
+
+	def _apply_settings_to_ui():
+		s = _load_settings()
+		try:
+			if hasattr(w, "image_output_dir_input"):
+				w.image_output_dir_input.setText(s.get("default_image_output_dir", ""))
+		except Exception:
+			pass
+		try:
+			if hasattr(w, "tiles_output_dir_input"):
+				w.tiles_output_dir_input.setText(s.get("default_tiles_output_dir", ""))
+		except Exception:
+			pass
+
+	def _save_settings_from_ui():
+		try:
+			data = {
+				"default_image_output_dir": getattr(w, "image_output_dir_input", None).text().strip()
+				if hasattr(w, "image_output_dir_input") and w.image_output_dir_input else "",
+				"default_tiles_output_dir": getattr(w, "tiles_output_dir_input", None).text().strip()
+				if hasattr(w, "tiles_output_dir_input") and w.tiles_output_dir_input else "",
+			}
+			with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+				json.dump(data, f, indent=2)
+		except Exception:
+			pass
+
+	_apply_settings_to_ui()
+
 	# Load zoom levels from JSON and populate dropdown
 	w.zoom_levels_table = load_zoom_levels_table()
 	try:
@@ -511,7 +570,35 @@ def main():
 	w.image_viewer.openFileRequested.connect(lambda: open_file_dialog(w))
 	w.image_viewer.pathsDropped.connect(lambda paths: handle_dropped_paths(w, paths))
 
-	# Hook Generate Image button: build output_buffer in selected format/quality and save
+	# Wire browse buttons for default output directories
+	def _choose_default_dir(kind: str):
+		src_path = getattr(w, "loaded_image_path", None)
+		start_dir = os.path.dirname(src_path) if src_path else os.path.expanduser("~")
+		chosen = QFileDialog.getExistingDirectory(None, "Choose default output folder", start_dir)
+		if not chosen:
+			return
+		try:
+			if kind == "image" and hasattr(w, "image_output_dir_input"):
+				w.image_output_dir_input.setText(chosen)
+			if kind == "tiles" and hasattr(w, "tiles_output_dir_input"):
+				w.tiles_output_dir_input.setText(chosen)
+			_save_settings_from_ui()
+		except Exception:
+			pass
+
+	try:
+		if hasattr(w, "image_output_dir_browse"):
+			w.image_output_dir_browse.clicked.connect(lambda: _choose_default_dir("image"))
+		if hasattr(w, "tiles_output_dir_browse"):
+			w.tiles_output_dir_browse.clicked.connect(lambda: _choose_default_dir("tiles"))
+		if hasattr(w, "image_output_dir_input"):
+			w.image_output_dir_input.textChanged.connect(lambda _t: _save_settings_from_ui())
+		if hasattr(w, "tiles_output_dir_input"):
+			w.tiles_output_dir_input.textChanged.connect(lambda _t: _save_settings_from_ui())
+	except Exception:
+		pass
+
+	# Hook Generate Image button: use default directory when set, otherwise prompt
 	def on_generate_image_clicked():
 		output_img = getattr(w, "output_image", None)
 		if output_img is None:
@@ -519,13 +606,20 @@ def main():
 			return
 		requested_fmt = get_selected_file_type(w)
 		quality = get_selected_quality(w)
-		# Ask where to save first (so we can stream directly to disk)
+		# Try default image output directory first
+		default_dir = ""
+		try:
+			if hasattr(w, "image_output_dir_input") and w.image_output_dir_input:
+				default_dir = w.image_output_dir_input.text().strip()
+		except Exception:
+			default_dir = ""
+
 		filter_map = {
 			"png": "PNG Image (*.png)",
 			"jpg": "JPEG Image (*.jpg *.jpeg)",
 			"webp": "WebP Image (*.webp)",
 		}
-		# Build default filename from input with _transparebtBG suffix
+		# Build default filename from input with _transparentBG suffix
 		src_path = getattr(w, "loaded_image_path", None)
 		if src_path:
 			base = os.path.splitext(os.path.basename(src_path))[0]
@@ -534,6 +628,20 @@ def main():
 			initial_path = os.path.join(initial_dir, initial_name)
 		else:
 			initial_path = os.path.join(os.path.expanduser("~"), f"output.{('jpg' if requested_fmt == 'jpg' else requested_fmt)}")
+		if default_dir:
+			try:
+				os.makedirs(default_dir, exist_ok=True)
+				# Decide the actual format to use (fallback to PNG if too large for codec)
+				fmt = choose_effective_format(output_img, requested_fmt)
+				base = os.path.splitext(os.path.basename(src_path))[0] if src_path else "output"
+				fname = os.path.join(default_dir, f"{base}_transparentBG.{('jpg' if fmt == 'jpg' else fmt)}")
+				save_output_image_to_file(output_img, fname, fmt, quality)
+				print(f"Saved image to: {fname}")
+				return
+			except Exception as e:
+				print("Default image folder failed, falling back to Save As dialog:", e)
+
+		# No default folder set or failed: Ask where to save
 		selected_filter = filter_map.get(requested_fmt, "All Files (*)")
 		fname, _ = QFileDialog.getSaveFileName(
 			None,
@@ -542,39 +650,54 @@ def main():
 			";;".join(filter_map.values()) + ";;All Files (*)",
 			selected_filter,
 		)
-		if fname:
-			# Decide the actual format to use (fallback to PNG if too large for codec)
-			fmt = choose_effective_format(output_img, requested_fmt)
-			# Ensure extension matches effective format if user omitted or used different ext
-			root, ext = os.path.splitext(fname)
-			if not ext:
+		if not fname:
+			return
+		# Decide the actual format to use (fallback to PNG if too large for codec)
+		fmt = choose_effective_format(output_img, requested_fmt)
+		# Ensure extension matches effective format if user omitted or used different ext
+		root, ext = os.path.splitext(fname)
+		if not ext:
+			fname = root + (".jpg" if fmt == "jpg" else f".{fmt}")
+		else:
+			ext_no_dot = ext[1:].lower()
+			if (fmt == "jpg" and ext_no_dot not in ("jpg", "jpeg")) or (fmt != "jpg" and ext_no_dot != fmt):
+				# replace mismatched extension
 				fname = root + (".jpg" if fmt == "jpg" else f".{fmt}")
-			else:
-				ext_no_dot = ext[1:].lower()
-				if (fmt == "jpg" and ext_no_dot not in ("jpg", "jpeg")) or (fmt != "jpg" and ext_no_dot != fmt):
-					# replace mismatched extension
-					fname = root + (".jpg" if fmt == "jpg" else f".{fmt}")
-			try:
-				save_output_image_to_file(output_img, fname, fmt, quality)
-				print(f"Saved image to: {fname}")
-			except Exception as e:
-				print("Failed to save image:", e)
+		try:
+			save_output_image_to_file(output_img, fname, fmt, quality)
+			print(f"Saved image to: {fname}")
+		except Exception as e:
+			print("Failed to save image:", e)
 
 	w.generate_image.clicked.connect(on_generate_image_clicked)
 
-	# Hook Generate Tiles button: run dzsave on the composed square image
+	# Hook Generate Tiles button: use default directory when set, otherwise prompt
 	def on_generate_tiles_clicked():
 		output_img = getattr(w, "output_image", None)
 		if output_img is None:
 			print("No output image available. Load an image and select a zoom level.")
 			return
-		# Ask user where to save tiles: choose a parent folder
 		src_path = getattr(w, "loaded_image_path", None)
-		start_dir = os.path.dirname(src_path) if src_path else os.path.expanduser("~")
-		chosen_dir = QFileDialog.getExistingDirectory(None, "Choose folder to save tiles", start_dir)
+		# Try default tiles output directory first
+		chosen_dir = ""
+		try:
+			if hasattr(w, "tiles_output_dir_input") and w.tiles_output_dir_input:
+				chosen_dir = w.tiles_output_dir_input.text().strip()
+		except Exception:
+			chosen_dir = ""
+		if chosen_dir:
+			try:
+				os.makedirs(chosen_dir, exist_ok=True)
+			except Exception as e:
+				print("Failed to create default tiles folder, opening chooser:", e)
+				chosen_dir = ""
 		if not chosen_dir:
-			print("Tile generation cancelled.")
-			return
+			# Ask user where to save tiles: choose a parent folder
+			start_dir = os.path.dirname(src_path) if src_path else os.path.expanduser("~")
+			chosen_dir = QFileDialog.getExistingDirectory(None, "Choose folder to save tiles", start_dir)
+			if not chosen_dir:
+				print("Tile generation cancelled.")
+				return
 		# Compute a clean base path for dzsave; do NOT append _tiles here to avoid duplicates
 		base_name = os.path.splitext(os.path.basename(src_path))[0] if src_path else "tiles"
 		base_path = os.path.join(chosen_dir, base_name)

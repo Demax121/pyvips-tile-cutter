@@ -432,6 +432,35 @@ class MainWindow(QMainWindow):
         row.addWidget(quality_box, stretch=4, alignment=Qt.AlignmentFlag.AlignTop)
         controls_layout.addLayout(row)
 
+        # -------------- Default Output Paths --------------
+        # Default Image Output Directory: editable line + Browse button
+        self.image_output_dir_input = QLineEdit()
+        self.image_output_dir_input.setObjectName("image_output_dir_input")
+        self.image_output_dir_input.setPlaceholderText("Choose a default folder for generated images (optional)")
+        self.image_output_dir_browse = QPushButton("Browse")
+        self.image_output_dir_browse.setObjectName("image_output_dir_browse")
+        img_dir_row = QHBoxLayout()
+        img_dir_row.setSpacing(8)
+        img_dir_row.addWidget(self.image_output_dir_input, stretch=1)
+        img_dir_row.addWidget(self.image_output_dir_browse)
+        img_dir_box = QWidget()
+        img_dir_box.setLayout(img_dir_row)
+        controls_layout.addWidget(labeled("Default image output folder", img_dir_box))
+
+        # Default Tiles Output Directory: editable line + Browse button
+        self.tiles_output_dir_input = QLineEdit()
+        self.tiles_output_dir_input.setObjectName("tiles_output_dir_input")
+        self.tiles_output_dir_input.setPlaceholderText("Choose a default folder for generated tiles (optional)")
+        self.tiles_output_dir_browse = QPushButton("Browse")
+        self.tiles_output_dir_browse.setObjectName("tiles_output_dir_browse")
+        tiles_dir_row = QHBoxLayout()
+        tiles_dir_row.setSpacing(8)
+        tiles_dir_row.addWidget(self.tiles_output_dir_input, stretch=1)
+        tiles_dir_row.addWidget(self.tiles_output_dir_browse)
+        tiles_dir_box = QWidget()
+        tiles_dir_box.setLayout(tiles_dir_row)
+        controls_layout.addWidget(labeled("Default tiles output folder", tiles_dir_box))
+
         # ---------- OPTIONAL section ----------
         opt_label = QLabel("OPTIONAL")
         opt_label.setProperty("role", "muted")
