@@ -127,6 +127,32 @@ def compose_centered(square: pyvips.Image, img: pyvips.Image) -> pyvips.Image:
 	return base.insert(src, left, top, expand=False)
 
 
+def make_fitting_image(window: app_ui.MainWindow, src: pyvips.Image, square_side: int) -> pyvips.Image:
+	"""Return an image that fits entirely within square_side without upscaling.
+
+	Prefers libvips thumbnail-on-load for memory efficiency when the original
+	file path is available; otherwise falls back to a high-quality resize.
+	"""
+	max_side = max(src.width, src.height)
+	if max_side <= square_side:
+		return src
+	# Try to re-load efficiently from file using thumbnail
+	spath = getattr(window, "loaded_image_path", None)
+	if spath and os.path.isfile(spath):
+		try:
+			# Fit within the square, preserving aspect ratio
+			timg = pyvips.Image.thumbnail(spath, square_side, height=square_side)
+			return timg
+		except Exception as e:
+			print("thumbnail() failed, falling back to resize:", e)
+	# Fallback: resize current image down to fit
+	scale = square_side / float(max_side)
+	try:
+		return src.resize(scale, kernel="lanczos3")
+	except Exception:
+		return src.resize(scale)
+
+
 def refresh_buffers(window: app_ui.MainWindow) -> None:
 	"""Recompute square_buffer and output_buffer based on selection and loaded image.
 
@@ -165,7 +191,9 @@ def refresh_buffers(window: app_ui.MainWindow) -> None:
 		return
 
 	try:
-		composite = compose_centered(square, src_img)
+		# Downscale if the selected square is smaller than the image
+		fitted = make_fitting_image(window, src_img, size)
+		composite = compose_centered(square, fitted)
 		setattr(window, "output_image", composite)
 		# Do not create in-memory encoded buffers here; keep only the composed image
 		if hasattr(window, "output_buffer"):
