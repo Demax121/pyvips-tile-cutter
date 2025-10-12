@@ -1,6 +1,6 @@
 import os
 import sys
-vipshome = '..\\bin'
+vipshome = 'libvips\\bin'
 os.environ['PATH'] = vipshome + ';' + os.environ['PATH']
 import pyvips
 
