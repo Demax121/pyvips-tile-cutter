@@ -24,18 +24,29 @@ except Exception:
 	pass
 
 
+# Embedded zoom levels table (in place of reading zoom_levels.json)
+# Source equivalent of dist/zoom_levels.json
+ZOOM_LEVELS_DATA = {
+	"levels": [
+		{"name": "zoom 0 (256x256)", "width": 256, "height": 256},
+		{"name": "zoom 1 (512x512)", "width": 512, "height": 512},
+		{"name": "zoom 2 (1024x1024)", "width": 1024, "height": 1024},
+		{"name": "zoom 3 (2048x2048)", "width": 2048, "height": 2048},
+		{"name": "zoom 4 (4096x4096)", "width": 4096, "height": 4096},
+		{"name": "zoom 5 (8192x8192)", "width": 8192, "height": 8192},
+		{"name": "zoom 6 (16384x16384)", "width": 16384, "height": 16384},
+		{"name": "zoom 7 (32768x32768)", "width": 32768, "height": 32768},
+	]
+}
+
 
 def load_zoom_levels_table() -> List[dict]:
-	"""Load table of zoom levels from zoom_levels.json adjacent to this file.
+	"""Return table of zoom levels using embedded data.
 
 	Returns list of dicts: {"name": str, "size": int} where size is max(width, height).
 	"""
-	here = Path(__file__).resolve().parent
-	json_path = here / "zoom_levels.json"
 	try:
-		with open(json_path, "r", encoding="utf-8") as f:
-			data = json.load(f)
-		levels = data.get("levels") or []
+		levels = (ZOOM_LEVELS_DATA or {}).get("levels") or []
 		table: List[dict] = []
 		for i, lv in enumerate(levels):
 			name = str(lv.get("name", f"zoom {i}"))
@@ -46,10 +57,10 @@ def load_zoom_levels_table() -> List[dict]:
 				continue
 			table.append({"name": name, "size": size})
 		if not table:
-			raise ValueError("no valid levels in JSON")
+			raise ValueError("no valid levels in embedded data")
 		return table
 	except Exception as e:
-		print("Failed to load zoom_levels.json, using defaults:", e)
+		print("Failed to use embedded zoom levels, using defaults:", e)
 		defaults = [256, 512, 1024, 2048, 4096]
 		return [{"name": f"zoom {i} ({s}x{s})", "size": s} for i, s in enumerate(defaults)]
 
