@@ -698,9 +698,10 @@ def main():
 			if not chosen_dir:
 				print("Tile generation cancelled.")
 				return
-		# Compute a clean base path for dzsave; do NOT append _tiles here to avoid duplicates
+		# Compute a clean base path for dzsave without suffixes
 		base_name = os.path.splitext(os.path.basename(src_path))[0] if src_path else "tiles"
 		base_path = os.path.join(chosen_dir, base_name)
+		target_dir = os.path.join(chosen_dir, f"{base_name}-tiles")
 
 		# Fixed options
 		fixed_opts = {
@@ -727,7 +728,7 @@ def main():
 				skip_blanks=skip_blanks,
 				**fixed_opts,
 			)
-			# Determine the folder created by dzsave for user feedback
+			# Determine the folder created by dzsave based on layout
 			if layout == "dz":
 				created_dir = f"{base_path}_files"
 			elif layout == "google":
@@ -735,7 +736,26 @@ def main():
 			else:
 				# zoomify and iiif typically use base_path as the directory
 				created_dir = base_path
-			print(f"Tiles generated in: {created_dir}")
+
+			# Compute a unique target '<name>-tiles' directory
+			final_dir = target_dir
+			if os.path.exists(final_dir):
+				counter = 1
+				while os.path.exists(f"{final_dir}_{counter}") and counter < 10000:
+					counter += 1
+				final_dir = f"{final_dir}_{counter}"
+
+			# Rename/move the created directory to the desired '-tiles' name
+			if os.path.exists(created_dir):
+				try:
+					os.replace(created_dir, final_dir)
+				except Exception:
+					# Fallback to shutil.move for cross-device moves
+					import shutil
+					shutil.move(created_dir, final_dir)
+				print(f"Tiles generated in: {final_dir}")
+			else:
+				print(f"Tiles generated but expected folder not found: {created_dir}")
 		except Exception as e:
 			print("Failed to generate tiles:", e)
 
