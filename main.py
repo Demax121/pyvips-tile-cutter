@@ -222,10 +222,13 @@ def load_image_to_buffer(window: app_ui.MainWindow, path: str) -> None:
 	We keep a bytes buffer on the window for later processing and call
 	the UI method to set the image for display.
 	"""
-	# Record path and decode with pyvips directly from file (streaming-friendly)
+	# Record path and decode with pyvips directly from file
 	setattr(window, "loaded_image_path", path)
 	try:
-		img = pyvips.Image.new_from_file(path, access="sequential")
+		# Prefer random access for JPEGs to avoid out-of-order read issues later
+		ext = os.path.splitext(path)[1].lower()
+		access_mode = "random" if ext in (".jpg", ".jpeg") else "sequential"
+		img = pyvips.Image.new_from_file(path, access=access_mode)
 		setattr(window, "loaded_image_vips", img)
 		auto_select_zoom_for_image(window, img.width, img.height)
 		refresh_buffers(window)
@@ -326,7 +329,7 @@ def encode_output_image(img: pyvips.Image, fmt: str, quality: int) -> bytes:
 		except Exception as e1:
 			# Retry by materializing to memory to avoid out-of-order read errors
 			try:
-				mem = image.copy(memory=True)
+				mem = image.copy_memory()
 				return getattr(mem, method_name)(*args, **kwargs)
 			except Exception:
 				raise e1
@@ -387,7 +390,7 @@ def save_output_image_to_file(img: pyvips.Image, path: str, fmt: str, quality: i
 			return getattr(image, method_name)(*args, **kwargs)
 		except Exception as e1:
 			try:
-				mem = image.copy(memory=True)
+				mem = image.copy_memory()
 				return getattr(mem, method_name)(*args, **kwargs)
 			except Exception:
 				raise e1
@@ -701,7 +704,9 @@ def main():
 		# Compute a clean base path for dzsave without suffixes
 		base_name = os.path.splitext(os.path.basename(src_path))[0] if src_path else "tiles"
 		base_path = os.path.join(chosen_dir, base_name)
-		target_dir = os.path.join(chosen_dir, f"{base_name}-tiles")
+		# User-configurable options needed for naming
+		layout = _get_tiles_layout(w)
+		target_dir = os.path.join(chosen_dir, f"{base_name}-tiles-{layout}")
 
 		# Fixed options
 		fixed_opts = {
@@ -711,7 +716,6 @@ def main():
 			"tile_size": 256,
 		}
 		# User-configurable options
-		layout = _get_tiles_layout(w)
 		suffix = _get_tiles_suffix(w)
 		overlap = _get_tiles_overlap(w)
 		region_shrink = _get_tiles_region_shrink(w)
@@ -719,25 +723,77 @@ def main():
 
 		# dzsave will create the final tiles folder(s) based on layout and base_path
 		try:
-			output_img.dzsave(
-				base_path,
-				layout=layout,
-				suffix=suffix,
-				overlap=overlap,
-				region_shrink=region_shrink,
-				skip_blanks=skip_blanks,
-				**fixed_opts,
-			)
-			# Determine the folder created by dzsave based on layout
+			def _do_dzsave(img_to_save: pyvips.Image):
+				img_to_save.dzsave(
+					base_path,
+					layout=layout,
+					suffix=suffix,
+					overlap=overlap,
+					region_shrink=region_shrink,
+					skip_blanks=skip_blanks,
+					**fixed_opts,
+				)
+			# Attempt with memory-backed image first to maximize success
+			try:
+				mem = output_img.copy_memory()
+				_do_dzsave(mem)
+			except Exception as e1:
+				# Rebuild composite from random-access source and retry once more
+				try:
+					spath = getattr(w, "loaded_image_path", None)
+					if spath and os.path.isfile(spath):
+						# Recreate output image using a fresh random-access decode
+						img2 = pyvips.Image.new_from_file(spath, access="random")
+						# Regenerate buffers with this source
+						try:
+							setattr(w, "loaded_image_vips", img2)
+							# Keep current zoom selection; rebuild composite
+							refresh_buffers(w)
+							new_out = getattr(w, "output_image", None)
+							if new_out is not None:
+								mem2 = new_out.copy_memory()
+								_do_dzsave(mem2)
+							else:
+								raise e1
+						except Exception:
+							raise e1
+						# restore original loaded_image_vips if needed is not critical here
+					else:
+						raise e1
+				except Exception:
+					raise e1
+			# Determine likely created folder based on layout
+			candidates = []
 			if layout == "dz":
-				created_dir = f"{base_path}_files"
+				candidates = [f"{base_path}_files", base_path]
 			elif layout == "google":
-				created_dir = f"{base_path}_tiles"
+				candidates = [f"{base_path}_tiles", base_path]
 			else:
-				# zoomify and iiif typically use base_path as the directory
-				created_dir = base_path
+				candidates = [base_path, f"{base_path}_tiles", f"{base_path}_files"]
 
-			# Compute a unique target '<name>-tiles' directory
+			created_dir = None
+			for c in candidates:
+				if os.path.isdir(c):
+					created_dir = c
+					break
+
+			# If not found, scan chosen_dir for a recent directory starting with base_name
+			if created_dir is None:
+				try:
+					import time
+					latest = (None, -1.0)
+					with os.scandir(chosen_dir) as it:
+						for entry in it:
+							if entry.is_dir() and entry.name.startswith(base_name):
+								mtime = entry.stat().st_mtime
+								if mtime > latest[1]:
+									latest = (entry.path, mtime)
+					if latest[0]:
+						created_dir = latest[0]
+				except Exception:
+					pass
+
+			# Compute a unique target '<name>-tiles-<layout>' directory
 			final_dir = target_dir
 			if os.path.exists(final_dir):
 				counter = 1
@@ -745,8 +801,7 @@ def main():
 					counter += 1
 				final_dir = f"{final_dir}_{counter}"
 
-			# Rename/move the created directory to the desired '-tiles' name
-			if os.path.exists(created_dir):
+			if created_dir and os.path.isdir(created_dir):
 				try:
 					os.replace(created_dir, final_dir)
 				except Exception:
@@ -755,7 +810,10 @@ def main():
 					shutil.move(created_dir, final_dir)
 				print(f"Tiles generated in: {final_dir}")
 			else:
-				print(f"Tiles generated but expected folder not found: {created_dir}")
+				print(
+					"Tiles generated but output folder not detected; looked for one of: ",
+					", ".join(candidates),
+				)
 		except Exception as e:
 			print("Failed to generate tiles:", e)
 
