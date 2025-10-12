@@ -514,7 +514,7 @@ def main():
 	w = app_ui.MainWindow()
 
 	# ---------- settings: load/save default output folders ----------
-	SETTINGS_PATH = Path(__file__).resolve().parent / "settings.json"
+	SETTINGS_PATH = Path(__file__).resolve().parent / "tileCutter_settings.json"
 
 	def _load_settings() -> Dict[str, str]:
 		try:
