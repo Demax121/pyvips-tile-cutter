@@ -2,7 +2,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QFont, QPixmap, QImageReader
 from PyQt6.QtWidgets import (
     QApplication,
@@ -273,9 +273,37 @@ class DropImageViewer(QFrame):
         self._placeholder.setVisible(False)
 
     def set_image(self, path: str):
+        # Decode a downscaled thumbnail to fit the viewer using QImageReader
+        # to avoid loading the full-resolution image into memory.
+        self.selected_path = path
+        try:
+            # Compute a reasonable target size (fallback if the widget is not yet sized)
+            avail = self.size()
+            max_w = max(1, avail.width()) if avail.width() > 0 else 2048
+            max_h = max(1, avail.height()) if avail.height() > 0 else 2048
+
+            reader = QImageReader(path)
+            reader.setAutoTransform(True)
+            orig = reader.size()
+            if orig.isValid():
+                ow, oh = max(1, orig.width()), max(1, orig.height())
+                ratio = min(max_w / ow, max_h / oh, 1.0)
+                target_w = max(1, int(ow * ratio))
+                target_h = max(1, int(oh * ratio))
+                reader.setScaledSize(QSize(target_w, target_h))
+            # Read the scaled image
+            img_q = reader.read()
+            if not img_q.isNull():
+                self._pixmap = QPixmap.fromImage(img_q)
+                self._update_view()
+                return
+        except Exception:
+            # Fall through to basic pixmap loading if anything goes wrong
+            pass
+
+        # Fallback: load as a regular pixmap (may be full-res)
         pm = QPixmap(path)
         if pm.isNull():
-            # Failed to load as image
             self._pixmap = None
             self.selected_path = None
             self._image_label.clear()
@@ -284,7 +312,6 @@ class DropImageViewer(QFrame):
             self._placeholder.setVisible(True)
             return
         self._pixmap = pm
-        self.selected_path = path
         self._update_view()
 
     # ---------- Qt events ----------
