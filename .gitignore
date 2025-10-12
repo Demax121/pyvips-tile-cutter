@@ -1,1 +1,4 @@
 /images
+/__pycache__
+tile_gen.txt
+UI.txt
