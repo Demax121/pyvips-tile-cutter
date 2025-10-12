@@ -603,9 +603,20 @@ def main():
 
 	# Hook Generate Image button: use default directory when set, otherwise prompt
 	def on_generate_image_clicked():
+		# Indicate processing start in the top banner
+		try:
+			w.show_processing_banner("Image processing")
+			QApplication.processEvents()
+		except Exception:
+			pass
+		
 		output_img = getattr(w, "output_image", None)
 		if output_img is None:
 			print("No output image available. Load an image and select a zoom level.")
+			try:
+				w.show_done_banner("Image processing done", 3000)
+			except Exception:
+				pass
 			return
 		requested_fmt = get_selected_file_type(w)
 		quality = get_selected_quality(w)
@@ -640,6 +651,10 @@ def main():
 				fname = os.path.join(default_dir, f"{base}_transparentBG.{('jpg' if fmt == 'jpg' else fmt)}")
 				save_output_image_to_file(output_img, fname, fmt, quality)
 				print(f"Saved image to: {fname}")
+				try:
+					w.show_done_banner("Image processing done", 3000)
+				except Exception:
+					pass
 				return
 			except Exception as e:
 				print("Default image folder failed, falling back to Save As dialog:", e)
@@ -669,16 +684,30 @@ def main():
 		try:
 			save_output_image_to_file(output_img, fname, fmt, quality)
 			print(f"Saved image to: {fname}")
-		except Exception as e:
-			print("Failed to save image:", e)
+		finally:
+			try:
+				w.show_done_banner("Image processing done", 3000)
+			except Exception:
+				pass
 
 	w.generate_image.clicked.connect(on_generate_image_clicked)
 
 	# Hook Generate Tiles button: use default directory when set, otherwise prompt
 	def on_generate_tiles_clicked():
+		# Indicate processing start in the top banner
+		try:
+			w.show_processing_banner("Image processing")
+			QApplication.processEvents()
+		except Exception:
+			pass
+		
 		output_img = getattr(w, "output_image", None)
 		if output_img is None:
 			print("No output image available. Load an image and select a zoom level.")
+			try:
+				w.show_done_banner("Image processing done", 3000)
+			except Exception:
+				pass
 			return
 		src_path = getattr(w, "loaded_image_path", None)
 		# Try default tiles output directory first
@@ -700,6 +729,10 @@ def main():
 			chosen_dir = QFileDialog.getExistingDirectory(None, "Choose folder to save tiles", start_dir)
 			if not chosen_dir:
 				print("Tile generation cancelled.")
+				try:
+					w.statusBar().showMessage("Image processing done", 3000)
+				except Exception:
+					pass
 				return
 		# Compute a clean base path for dzsave without suffixes
 		base_name = os.path.splitext(os.path.basename(src_path))[0] if src_path else "tiles"
@@ -816,6 +849,11 @@ def main():
 				)
 		except Exception as e:
 			print("Failed to generate tiles:", e)
+		finally:
+			try:
+				w.show_done_banner("Image processing done", 3000)
+			except Exception:
+				pass
 
 	try:
 		w.generate_tiles.clicked.connect(on_generate_tiles_clicked)

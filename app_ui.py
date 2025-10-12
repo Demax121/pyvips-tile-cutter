@@ -2,7 +2,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer
 from PyQt6.QtGui import QFont, QPixmap, QImageReader
 from PyQt6.QtWidgets import (
     QApplication,
@@ -69,6 +69,18 @@ QFrame[kind="panel"], QFrame#zoom_panel {{
     background-color: {THEME['panel']};
     border: none;
     border-radius: {THEME['radius']}px;
+}}
+/* Top status banner */
+QFrame#status_banner {{
+    background-color: {THEME['accent']};
+    border: none;
+    border-radius: {THEME['radius']}px;
+    padding: 10px 14px;
+}}
+QFrame#status_banner QLabel {{
+    color: white;
+    font-weight: 700;
+    font-size: 14px;
 }}
 QFrame[kind="viewer"] {{
     background-color: {THEME['panel']};
@@ -385,6 +397,17 @@ class MainWindow(QMainWindow):
 
         # Header (removed for a cleaner look, title bar is enough)
 
+        # Prominent processing banner at the top (hidden by default)
+        self.status_banner = QFrame()
+        self.status_banner.setObjectName("status_banner")
+        self.status_banner.setVisible(False)
+        sb_layout = QHBoxLayout(self.status_banner)
+        sb_layout.setContentsMargins(12, 8, 12, 8)
+        self.status_banner_label = QLabel("")
+        self.status_banner_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        sb_layout.addWidget(self.status_banner_label)
+        root.addWidget(self.status_banner)
+
         # Main area: viewer + controls side-by-side
         main_row = QHBoxLayout()
         main_row.setSpacing(THEME['spacing'])
@@ -606,6 +629,29 @@ class MainWindow(QMainWindow):
         controls_layout.addLayout(buttons_row)
 
         main_row.addWidget(controls_panel, stretch=2)
+
+    # ---------- Status banner helpers (UI only) ----------
+    def show_processing_banner(self, text: str = "Image processing"):
+        try:
+            self.status_banner_label.setText(text)
+            self.status_banner.setVisible(True)
+        except Exception:
+            pass
+
+    def show_done_banner(self, text: str = "Image processing done", hide_after_ms: int = 3000):
+        try:
+            self.status_banner_label.setText(text)
+            self.status_banner.setVisible(True)
+            # auto-hide after delay
+            QTimer.singleShot(int(hide_after_ms), self.hide_banner)
+        except Exception:
+            pass
+
+    def hide_banner(self):
+        try:
+            self.status_banner.setVisible(False)
+        except Exception:
+            pass
 
 
 def labeled(text: str, widget: QWidget) -> QWidget:
