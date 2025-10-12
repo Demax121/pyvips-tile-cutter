@@ -4,7 +4,7 @@ vips dzsave "%source_dir%\!selected_file!" "%destination_dir%\!selected_file!"
 
 opcje dla tyles do wyboru: layout
 rozszerzenie dla tiles/images: suffix[Q=80]
-
+downscale option to use smaller images annd zoom levels
 
 flagi:
 

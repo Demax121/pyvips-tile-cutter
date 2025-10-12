@@ -196,46 +196,7 @@ class IntSpinBox(QSpinBox):
         return super().value()
 
 
-class ZoomLevelWidget(QWidget):
-    """Composite widget for a zoom level definition.
-
-    Contains:
-    - QLineEdit named 'zoom_level_name'
-    - QSpinBox named 'square_size' (integer only), labeled "square size"
-    UI only: no behavior, just fields.
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("zoom_level_widget")
-
-        # Layout and container frame to style as a panel
-        container = QFrame(self)
-        container.setObjectName("zoom_panel")
-        container.setFrameShape(QFrame.Shape.NoFrame)
-
-        form = QFormLayout(container)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form.setContentsMargins(15, 15, 15, 15)
-        form.setSpacing(10)
-
-        # Text input: zoom_level_name
-        self.zoom_level_name = QLineEdit(container)
-        self.zoom_level_name.setObjectName("zoom_level_name")
-        self.zoom_level_name.setPlaceholderText("My zoom level")
-        form.addRow("Name:", self.zoom_level_name)
-
-        # Integer input: square_size (with label "square size")
-        self.square_size = QSpinBox(container)
-        self.square_size.setObjectName("square_size")
-        self.square_size.setRange(1, 100000)  # generous range; UI only
-        self.square_size.setValue(256)
-        form.addRow("Square Size:", self.square_size)
-
-        # outer layout
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(container)
+## Removed ZoomLevelWidget (custom zoom level UI) per request
 
 
 class DropImageViewer(QFrame):
@@ -420,10 +381,7 @@ class MainWindow(QMainWindow):
         self.zoom_levels.set_items(list(initial.zoom_levels))
         controls_layout.addWidget(labeled("Zoom Levels", self.zoom_levels))
 
-        # Zoom level component (composite text + integer)
-        self.zoom_level = ZoomLevelWidget()
-        self.zoom_level.setObjectName("zoom_level")
-        controls_layout.addWidget(self.zoom_level)
+    # Removed custom zoom level editor (name + square size)
 
         # Dropdown: file_type (values webp, png by default; easy to change)
         self.file_type = ValueComboBox()
