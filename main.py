@@ -399,6 +399,89 @@ def save_output_image_to_file(img: pyvips.Image, path: str, fmt: str, quality: i
 	rgba = ensure_rgba(img)
 	rgba.pngsave(path)
 
+def _get_tiles_layout(window: app_ui.MainWindow) -> str:
+	"""Return dzsave layout string from UI, defaulting to 'dz'."""
+	try:
+		layout = window.layout_options.value.lower().strip()
+		return layout or "dz"
+	except Exception:
+		return "dz"
+
+
+def _get_tiles_suffix(window: app_ui.MainWindow) -> str:
+	"""Return dzsave suffix string based on file type and quality.
+
+	Example results:
+	- .webp[Q=85]
+	- .jpg[Q=90]
+	- .png[compression=3]
+	Falls back to webp if UI is unavailable.
+	"""
+	# Decide effective format for tiles: follow selected file type
+	fmt = get_selected_file_type(window)
+	q = get_selected_quality(window)
+	if fmt == "webp":
+		return f".webp[Q={q}]"
+	if fmt in ("jpg", "jpeg"):
+		return f".jpg[Q={q}]"
+	# png: map quality to compression 0..9 (0 = none/fast, 9 = max)
+	comp = int(round((100 - q) * 9 / 99))
+	comp = max(0, min(9, comp))
+	return f".png[compression={comp}]"
+
+
+def _get_tiles_overlap(window: app_ui.MainWindow) -> int:
+	"""Return tile overlap. Default 2; use UI value only if checkbox checked."""
+	try:
+		if getattr(window, "change_overlap", None) and window.change_overlap.isChecked():
+			return int(window.change_overlap_value.value)
+	except Exception:
+		pass
+	return 2
+
+
+def _get_tiles_region_shrink(window: app_ui.MainWindow) -> str:
+	"""Return region_shrink mode. Default 'mode'; use UI value only if checkbox checked."""
+	try:
+		if getattr(window, "change_region_shrink", None) and window.change_region_shrink.isChecked():
+			val = window.change_region_shrink_mode.value
+			return (val or "mode").lower()
+	except Exception:
+		pass
+	return "mode"
+
+
+def _get_tiles_skip_blanks(window: app_ui.MainWindow) -> int:
+	"""Return skip_blanks threshold. Default 5; use UI value only if checkbox checked."""
+	try:
+		if getattr(window, "skip_blanks", None) and window.skip_blanks.isChecked():
+			return int(window.skip_blanks_value.value)
+	except Exception:
+		pass
+	return 5
+
+
+def _compute_tiles_output_dir(window: app_ui.MainWindow) -> Optional[str]:
+	"""Compute the tiles output directory: '<image name>_tiles' next to the source image.
+
+	Returns an absolute path string or None if no source path is available.
+	"""
+	src_path = getattr(window, "loaded_image_path", None)
+	if not src_path:
+		return None
+	base_dir = os.path.dirname(src_path) or os.path.expanduser("~")
+	base_name = os.path.splitext(os.path.basename(src_path))[0]
+	out_dir = os.path.join(base_dir, f"{base_name}_tiles")
+	# Ensure the path is unique by appending a counter if the directory exists
+	candidate = out_dir
+	counter = 1
+	while os.path.exists(candidate):
+		candidate = f"{out_dir}_{counter}"
+		counter += 1
+		if counter > 9999:
+			break
+	return candidate
+
 
 def main():
 	app = QApplication(sys.argv)
@@ -478,6 +561,65 @@ def main():
 				print("Failed to save image:", e)
 
 	w.generate_image.clicked.connect(on_generate_image_clicked)
+
+	# Hook Generate Tiles button: run dzsave on the composed square image
+	def on_generate_tiles_clicked():
+		output_img = getattr(w, "output_image", None)
+		if output_img is None:
+			print("No output image available. Load an image and select a zoom level.")
+			return
+		# Ask user where to save tiles: choose a parent folder
+		src_path = getattr(w, "loaded_image_path", None)
+		start_dir = os.path.dirname(src_path) if src_path else os.path.expanduser("~")
+		chosen_dir = QFileDialog.getExistingDirectory(None, "Choose folder to save tiles", start_dir)
+		if not chosen_dir:
+			print("Tile generation cancelled.")
+			return
+		# Compute a clean base path for dzsave; do NOT append _tiles here to avoid duplicates
+		base_name = os.path.splitext(os.path.basename(src_path))[0] if src_path else "tiles"
+		base_path = os.path.join(chosen_dir, base_name)
+
+		# Fixed options
+		fixed_opts = {
+			"centre": True,
+			"depth": "onetile",
+			"background": 0,
+			"tile_size": 256,
+		}
+		# User-configurable options
+		layout = _get_tiles_layout(w)
+		suffix = _get_tiles_suffix(w)
+		overlap = _get_tiles_overlap(w)
+		region_shrink = _get_tiles_region_shrink(w)
+		skip_blanks = _get_tiles_skip_blanks(w)
+
+		# dzsave will create the final tiles folder(s) based on layout and base_path
+		try:
+			output_img.dzsave(
+				base_path,
+				layout=layout,
+				suffix=suffix,
+				overlap=overlap,
+				region_shrink=region_shrink,
+				skip_blanks=skip_blanks,
+				**fixed_opts,
+			)
+			# Determine the folder created by dzsave for user feedback
+			if layout == "dz":
+				created_dir = f"{base_path}_files"
+			elif layout == "google":
+				created_dir = f"{base_path}_tiles"
+			else:
+				# zoomify and iiif typically use base_path as the directory
+				created_dir = base_path
+			print(f"Tiles generated in: {created_dir}")
+		except Exception as e:
+			print("Failed to generate tiles:", e)
+
+	try:
+		w.generate_tiles.clicked.connect(on_generate_tiles_clicked)
+	except Exception:
+		pass
 	# Reset button clears the in-memory buffer and resets the viewer
 	def _reset():
 		if hasattr(w, "loaded_image_bytes"):
