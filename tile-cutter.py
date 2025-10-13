@@ -266,6 +266,21 @@ def recompute_image_pipeline(window: app_ui.MainWindow) -> None:
 				except Exception:
 					pass
 
+def get_output_image(window: app_ui.MainWindow) -> Optional["pyvips.Image"]:
+	"""Return the current composited image, recomputing the pipeline if needed."""
+	try:
+		img = getattr(window, "output_image", None)
+		if img is not None:
+			return img
+		# recompute if possible
+		if getattr(window, "loaded_image_vips", None) is None:
+			return None
+		if not _is_zoom_selected(window):
+			return None
+		recompute_image_pipeline(window)
+		return getattr(window, "output_image", None)
+	except Exception:
+		return None
 
 def is_image_file(path: str) -> bool:
 	ext = os.path.splitext(path)[1].lower()
@@ -370,12 +385,31 @@ def get_selected_quality(window: app_ui.MainWindow) -> int:
 		return 100
 
 
-def save_image(img: pyvips.Image, path: str, fmt: str, quality: int) -> None:
-	"""Save image directly to a file using streaming encoders.
+def save_image(img: pyvips.Image, path: str, requested_fmt: str, quality: int) -> str:
+	"""Save image using streaming encoders with format fallback and extension fix.
 
-	Handles PNG/WebP/JPEG with proper quality/compression mapping and alpha.
+	- Accepts a requested format (png/webp/jpg), but will fallback to PNG if the
+	  image exceeds encoder limits (e.g., WebP ~16k, JPEG ~65k).
+	- Ensures the file extension matches the final effective format.
+	- Returns the final saved file path.
 	"""
-	fmt = (fmt or "png").lower()
+	req = (requested_fmt or "png").lower()
+	w, h = int(img.width), int(img.height)
+	# Compute effective format considering size limits
+	if req == "webp" and (w >= 16384 or h >= 16384):
+		print("Requested WebP but image is too large; falling back to PNG.")
+		eff = "png"
+	elif req in ("jpg", "jpeg") and (w >= 65536 or h >= 65536):
+		print("Requested JPEG but image is too large; falling back to PNG.")
+		eff = "png"
+	else:
+		eff = "jpg" if req in ("jpg", "jpeg") else req
+
+	# Normalize extension to match effective format
+	root, ext = os.path.splitext(path)
+	desired_ext = ".jpg" if eff == "jpg" else f".{eff}"
+	if not ext or ext.lower() != desired_ext:
+		path = root + desired_ext
 
 	def _save_with_retry(image: pyvips.Image, method_name: str, *args, **kwargs):
 		try:
@@ -386,17 +420,18 @@ def save_image(img: pyvips.Image, path: str, fmt: str, quality: int) -> None:
 				return getattr(mem, method_name)(*args, **kwargs)
 			except Exception:
 				raise e1
-	if fmt == "png":
+
+	if eff == "png":
 		comp = int(round((100 - quality) * 9 / 99))
 		comp = max(0, min(9, comp))
 		rgba = ensure_rgba(img)
 		_save_with_retry(rgba, "pngsave", path, compression=comp)
-		return
-	if fmt == "webp":
+		return path
+	if eff == "webp":
 		rgba = ensure_rgba(img)
 		_save_with_retry(rgba, "webpsave", path, Q=quality)
-		return
-	if fmt in ("jpg", "jpeg"):
+		return path
+	if eff == "jpg":
 		base = img
 		if img.bands == 4:
 			try:
@@ -409,93 +444,28 @@ def save_image(img: pyvips.Image, path: str, fmt: str, quality: int) -> None:
 			g = img.extract_band(0)
 			base = pyvips.Image.bandjoin([g, g, g])
 		_save_with_retry(base, "jpegsave", path, Q=quality)
-		return
-	# default to PNG
+		return path
+	# Default fallback to PNG
 	rgba = ensure_rgba(img)
 	_save_with_retry(rgba, "pngsave", path)
-
-
-def choose_effective_format(img: pyvips.Image, requested_fmt: str) -> str:
-	"""Return a safe output format considering encoder dimension limits.
-
-	- WebP fails above ~16383 px per side; fallback to PNG when exceeded.
-	- JPEG typically fails above ~65535 px per side; fallback to PNG when exceeded.
-	"""
-	fmt = (requested_fmt or "png").lower()
-	w, h = int(img.width), int(img.height)
-	# WebP constraint
-	if fmt == "webp" and (w >= 16384 or h >= 16384):
-		print("Requested WebP but image is too large for WebP; falling back to PNG.")
-		return "png"
-	# JPEG constraint
-	if fmt in ("jpg", "jpeg") and (w >= 65536 or h >= 65536):
-		print("Requested JPEG but image is too large for JPEG; falling back to PNG.")
-		return "png"
-	return fmt
+	return path
 
 
 ## removed: save_output_image_to_file (merged into save_image)
 
-def _get_tiles_layout(window: app_ui.MainWindow) -> str:
-	"""Return dzsave layout string from UI, defaulting to 'dz'."""
-	try:
-		layout = window.layout_options.value.lower().strip()
-		return layout or "dz"
-	except Exception:
-		return "dz"
-
-
-def _get_tiles_suffix(window: app_ui.MainWindow) -> str:
-	"""Return dzsave suffix string based on file type and quality.
-
-	Example results:
-	- .webp[Q=85]
-	- .jpg[Q=90]
-	- .png[compression=3]
-	Falls back to webp if UI is unavailable.
-	"""
-	# Decide effective format for tiles: follow selected file type
-	fmt = get_selected_file_type(window)
-	q = get_selected_quality(window)
-	if fmt == "webp":
-		return f".webp[Q={q}]"
-	if fmt in ("jpg", "jpeg"):
-		return f".jpg[Q={q}]"
-	# png: map quality to compression 0..9 (0 = none/fast, 9 = max)
-	comp = int(round((100 - q) * 9 / 99))
-	comp = max(0, min(9, comp))
-	return f".png[compression={comp}]"
-
-
-def _get_tiles_overlap(window: app_ui.MainWindow) -> int:
-	"""Return tile overlap. Default 2; use UI value only if checkbox checked."""
-	try:
-		if getattr(window, "change_overlap", None) and window.change_overlap.isChecked():
-			return int(window.change_overlap_value.value)
-	except Exception:
-		pass
-	return 2
-
-
-def _get_tiles_region_shrink(window: app_ui.MainWindow) -> str:
-	"""Return region_shrink mode. Default 'mode'; use UI value only if checkbox checked."""
-	try:
-		if getattr(window, "change_region_shrink", None) and window.change_region_shrink.isChecked():
-			val = window.change_region_shrink_mode.value
-			return (val or "mode").lower()
-	except Exception:
-		pass
-	return "mode"
-
-
-def _get_tiles_skip_blanks(window: app_ui.MainWindow) -> int:
-	"""Return skip_blanks threshold. Default 5; use UI value only if checkbox checked."""
-	try:
-		if getattr(window, "skip_blanks", None) and window.skip_blanks.isChecked():
-			return int(window.skip_blanks_value.value)
-	except Exception:
-		pass
-	return 5
+def _unique_path(base_path: str) -> str:
+	"""Return a unique path by appending _N if needed (up to 9999)."""
+	if not os.path.exists(base_path):
+		return base_path
+	counter = 1
+	while counter < 10000:
+		candidate = f"{base_path}_{counter}"
+		if not os.path.exists(candidate):
+			return candidate
+		counter += 1
+	# As a last resort, include a timestamp
+	import time
+	return f"{base_path}_{int(time.time())}"
 
 
 def _compute_tiles_output_dir(window: app_ui.MainWindow) -> Optional[str]:
@@ -786,7 +756,7 @@ def main():
 		except Exception:
 			pass
 		
-		output_img = getattr(w, "output_image", None)
+		output_img = get_output_image(w)
 		if output_img is None:
 			print("No output image available. Load an image and select a zoom level.")
 			try:
@@ -823,12 +793,10 @@ def main():
 		if default_dir:
 			try:
 				os.makedirs(default_dir, exist_ok=True)
-				# Decide the actual format to use (fallback to PNG if too large for codec)
-				fmt = choose_effective_format(output_img, requested_fmt)
 				base = os.path.splitext(os.path.basename(src_path))[0] if src_path else "output"
-				fname = os.path.join(default_dir, f"{base}{zoom_part}_transparentBG.{('jpg' if fmt == 'jpg' else fmt)}")
-				save_image(output_img, fname, fmt, quality)
-				print(f"Saved image to: {fname}")
+				fname = os.path.join(default_dir, f"{base}{zoom_part}_transparentBG.{requested_fmt}")
+				saved = save_image(output_img, fname, requested_fmt, quality)
+				print(f"Saved image to: {saved}")
 				try:
 					w.show_done_banner("Image processing done", 3000)
 				except Exception:
@@ -848,20 +816,9 @@ def main():
 		)
 		if not fname:
 			return
-		# Decide the actual format to use (fallback to PNG if too large for codec)
-		fmt = choose_effective_format(output_img, requested_fmt)
-		# Ensure extension matches effective format if user omitted or used different ext
-		root, ext = os.path.splitext(fname)
-		if not ext:
-			fname = root + (".jpg" if fmt == "jpg" else f".{fmt}")
-		else:
-			ext_no_dot = ext[1:].lower()
-			if (fmt == "jpg" and ext_no_dot not in ("jpg", "jpeg")) or (fmt != "jpg" and ext_no_dot != fmt):
-				# replace mismatched extension
-				fname = root + (".jpg" if fmt == "jpg" else f".{fmt}")
 		try:
-			save_image(output_img, fname, fmt, quality)
-			print(f"Saved image to: {fname}")
+			saved = save_image(output_img, fname, requested_fmt, quality)
+			print(f"Saved image to: {saved}")
 		finally:
 			try:
 				w.show_done_banner("Image processing done", 3000)
@@ -921,7 +878,12 @@ def main():
 		zoom_part = f"-Zoom-{zidx}" if zidx is not None else ""
 		base_path = os.path.join(chosen_dir, f"{base_name}{zoom_part}")
 		# User-configurable options needed for naming
-		layout = _get_tiles_layout(w)
+		# Inline tiles parameters from UI
+		try:
+			layout = w.layout_options.value.lower().strip()
+			layout = layout or "dz"
+		except Exception:
+			layout = "dz"
 		target_dir = os.path.join(chosen_dir, f"{base_name}{zoom_part}-tiles-{layout}")
 
 		# Fixed options
@@ -932,10 +894,41 @@ def main():
 			"tile_size": 256,
 		}
 		# User-configurable options
-		suffix = _get_tiles_suffix(w)
-		overlap = _get_tiles_overlap(w)
-		region_shrink = _get_tiles_region_shrink(w)
-		skip_blanks = _get_tiles_skip_blanks(w)
+		# Suffix depends on selected file type and quality
+		fmt = get_selected_file_type(w)
+		q = get_selected_quality(w)
+		if fmt == "webp":
+			suffix = f".webp[Q={q}]"
+		elif fmt in ("jpg", "jpeg"):
+			suffix = f".jpg[Q={q}]"
+		else:
+			comp = int(round((100 - q) * 9 / 99))
+			comp = max(0, min(9, comp))
+			suffix = f".png[compression={comp}]"
+		# Overlap
+		try:
+			if getattr(w, "change_overlap", None) and w.change_overlap.isChecked():
+				overlap = int(w.change_overlap_value.value)
+			else:
+				overlap = 2
+		except Exception:
+			overlap = 2
+		# region_shrink
+		try:
+			if getattr(w, "change_region_shrink", None) and w.change_region_shrink.isChecked():
+				region_shrink = (w.change_region_shrink_mode.value or "mode").lower()
+			else:
+				region_shrink = "mode"
+		except Exception:
+			region_shrink = "mode"
+		# skip_blanks
+		try:
+			if getattr(w, "skip_blanks", None) and w.skip_blanks.isChecked():
+				skip_blanks = int(w.skip_blanks_value.value)
+			else:
+				skip_blanks = 5
+		except Exception:
+			skip_blanks = 5
 
 		# dzsave will create the final tiles folder(s) based on layout and base_path
 		try:
@@ -948,10 +941,18 @@ def main():
 					output_img.tiffsave(tmp_tif, compression="none", bigtiff=True)
 				except Exception:
 					output_img.copy_memory().tiffsave(tmp_tif, compression="none", bigtiff=True)
-				# 2) Re-open from disk with random access and run dzsave
+				# 2) Determine final directory (unique) and base path for dzsave
+				final_dir = _unique_path(target_dir)
+				if layout == "dz":
+					# dz creates '<base>_files' + '<base>.dzi' -> we rename to final_dir
+					base_for_dzsave = os.path.join(chosen_dir, f"{base_name}{zoom_part}")
+				else:
+					# other layouts write directly into the base directory
+					base_for_dzsave = final_dir
+				# Re-open from disk with random access and run dzsave
 				disk_img = pyvips.Image.new_from_file(tmp_tif, access="random")
 				disk_img.dzsave(
-					base_path,
+					base_for_dzsave,
 					layout=layout,
 					suffix=suffix,
 					overlap=overlap,
@@ -959,63 +960,51 @@ def main():
 					skip_blanks=skip_blanks,
 					**fixed_opts,
 				)
+				# For dz, move '<base>_files' to final_dir and include '.dzi' file
+				created_dir = None
+				extra_files = []
+				if layout == "dz":
+					created_dir = f"{base_for_dzsave}_files"
+					if not os.path.isdir(created_dir):
+						raise RuntimeError("dzsave output folder not found")
+					dzi = f"{base_for_dzsave}.dzi"
+					if os.path.isfile(dzi):
+						extra_files.append(dzi)
+				else:
+					# For non-dz layouts, dzsave wrote directly to final_dir
+					created_dir = final_dir
 			finally:
 				try:
 					os.remove(tmp_tif)
 				except Exception:
 					pass
-			# Determine likely created folder based on layout
-			candidates = []
+
+			# Move/rename only for dz layout; non-dz already wrote to final_dir
 			if layout == "dz":
-				candidates = [f"{base_path}_files", base_path]
-			elif layout == "google":
-				candidates = [f"{base_path}_tiles", base_path]
+				if created_dir and os.path.isdir(created_dir):
+					try:
+						os.replace(created_dir, final_dir)
+					except Exception:
+						# Fallback to shutil.move for cross-device moves
+						import shutil
+						shutil.move(created_dir, final_dir)
+					# Move any extra files (e.g., .dzi) into final_dir
+					for ef in extra_files:
+						try:
+							base_name_only = os.path.basename(ef)
+							os.replace(ef, os.path.join(final_dir, base_name_only))
+						except Exception:
+							try:
+								import shutil
+								shutil.move(ef, os.path.join(final_dir, base_name_only))
+							except Exception:
+								pass
+					print(f"Tiles generated in: {final_dir}")
+				else:
+					print("Tiles generated but output folder not detected.")
 			else:
-				candidates = [base_path, f"{base_path}_tiles", f"{base_path}_files"]
-
-			created_dir = None
-			for c in candidates:
-				if os.path.isdir(c):
-					created_dir = c
-					break
-
-			# If not found, scan chosen_dir for a recent directory starting with base_name (with zoom)
-			if created_dir is None:
-				try:
-					import time
-					latest = (None, -1.0)
-					with os.scandir(chosen_dir) as it:
-						for entry in it:
-							if entry.is_dir() and entry.name.startswith(f"{base_name}{zoom_part}"):
-								mtime = entry.stat().st_mtime
-								if mtime > latest[1]:
-									latest = (entry.path, mtime)
-					if latest[0]:
-						created_dir = latest[0]
-				except Exception:
-					pass
-
-			# Compute a unique target '<name>-tiles-<layout>' directory
-			final_dir = target_dir
-			if os.path.exists(final_dir):
-				counter = 1
-				while os.path.exists(f"{final_dir}_{counter}") and counter < 10000:
-					counter += 1
-				final_dir = f"{final_dir}_{counter}"
-
-			if created_dir and os.path.isdir(created_dir):
-				try:
-					os.replace(created_dir, final_dir)
-				except Exception:
-					# Fallback to shutil.move for cross-device moves
-					import shutil
-					shutil.move(created_dir, final_dir)
+				# Non-dz layouts already used final_dir as output
 				print(f"Tiles generated in: {final_dir}")
-			else:
-				print(
-					"Tiles generated but output folder not detected; looked for one of: ",
-					", ".join(candidates),
-				)
 		except Exception as e:
 			print("Failed to generate tiles:", e)
 		finally:
