@@ -1,8 +1,11 @@
+from __future__ import annotations
 import os
 import sys
-vipshome = '..\\bin'
-os.environ['PATH'] = vipshome + ';' + os.environ['PATH']
-import pyvips
+"""
+Startup flow changes:
+ - On first run, prompt user for the libvips folder (root or bin) and save it to tileCutter_settings.json.
+ - On subsequent runs, read the saved path, set PATH to its bin folder, then import pyvips.
+"""
 
 
 # ONLY ADD CODE BELOW THIS COMMENT
@@ -12,7 +15,17 @@ os.environ["QT_IMAGEIO_MAXALLOC"] = str(2 * 1024 * 1024 * 1024)  # 2 GiB
 from typing import List, Optional, Dict
 from pathlib import Path
 import json
-from PyQt6.QtWidgets import QApplication, QFileDialog
+from PyQt6.QtWidgets import (
+	QApplication,
+	QFileDialog,
+	QDialog,
+	QVBoxLayout,
+	QHBoxLayout,
+	QLabel,
+	QLineEdit,
+	QPushButton,
+	QMessageBox,
+)
 from PyQt6.QtGui import QPixmap, QImageReader
 from PyQt6.QtCore import QSize
 
@@ -517,23 +530,148 @@ def _compute_tiles_output_dir(window: app_ui.MainWindow) -> Optional[str]:
 	return candidate
 
 
+class VipshomeSetupDialog(QDialog):
+	"""Small dialog to choose the libvips folder (root or bin) and save it.
+
+	Accepts either:
+	- path to the root libvips folder containing a 'bin' subfolder, or
+	- path directly to the 'bin' folder.
+	"""
+
+	def __init__(self, parent=None):
+		super().__init__(parent)
+		self.setWindowTitle("Locate libvips folder")
+		self.resize(560, 160)
+		layout = QVBoxLayout(self)
+		hint = QLabel(
+			"Select your libvips folder.\n"
+			"You can choose the root (e.g. C:\\vips-dev-8.17) or the bin folder directly."
+		)
+		layout.addWidget(hint)
+		row = QHBoxLayout()
+		self.path_edit = QLineEdit(self)
+		self.path_edit.setPlaceholderText(r"C:\\Users\\You\\Downloads\\vips-dev-8.17")
+		browse = QPushButton("Browse…", self)
+		row.addWidget(self.path_edit, 1)
+		row.addWidget(browse)
+		layout.addLayout(row)
+		buttons = QHBoxLayout()
+		self.save_btn = QPushButton("Save && Continue", self)
+		cancel_btn = QPushButton("Cancel", self)
+		self.save_btn.setDefault(True)
+		buttons.addStretch(1)
+		buttons.addWidget(cancel_btn)
+		buttons.addWidget(self.save_btn)
+		layout.addLayout(buttons)
+
+		browse.clicked.connect(self._browse)
+		self.save_btn.clicked.connect(self._on_save)
+		cancel_btn.clicked.connect(self.reject)
+
+	def _browse(self):
+		base = os.path.expanduser("~")
+		chosen = QFileDialog.getExistingDirectory(self, "Select libvips folder (root or bin)", base)
+		if chosen:
+			self.path_edit.setText(chosen)
+
+	@staticmethod
+	def derive_bin_dir(path_text: str) -> str:
+		p = (path_text or "").strip().strip('"')
+		if not p:
+			return ""
+		# If user picked the bin folder directly
+		if os.path.isdir(p) and os.path.basename(p).lower() == "bin":
+			return p
+		# If user picked the root, use its bin
+		candidate = os.path.join(p, "bin")
+		if os.path.isdir(candidate):
+			return candidate
+		return ""
+
+	def _on_save(self):
+		bin_dir = self.derive_bin_dir(self.path_edit.text())
+		if not bin_dir:
+			QMessageBox.warning(
+				self,
+				"Invalid path",
+				"Please choose the libvips folder (root with a 'bin' subfolder) or the 'bin' folder itself.",
+			)
+			return
+		self._selected_bin = bin_dir
+		self.accept()
+
+	def selected_bin(self) -> Optional[str]:
+		return getattr(self, "_selected_bin", None)
+
+
+def _settings_path() -> Path:
+	return Path(__file__).resolve().parent / "tileCutter_settings.json"
+
+
+def _load_settings_any() -> Dict[str, str]:
+	try:
+		with open(_settings_path(), "r", encoding="utf-8") as f:
+			data = json.load(f) or {}
+			# Keep only simple values
+			return {k: str(v) for k, v in data.items() if isinstance(v, (str, int))}
+	except Exception:
+		return {}
+
+
+def _save_settings_merge(updates: Dict[str, str]) -> None:
+	data = _load_settings_any()
+	data.update({k: str(v) for k, v in (updates or {}).items()})
+	try:
+		with open(_settings_path(), "w", encoding="utf-8") as f:
+			json.dump(data, f, indent=2)
+	except Exception:
+		pass
+
+
+def _ensure_libvips_and_import_pyvips(app: QApplication) -> None:
+	"""Ensure we have a valid libvips bin path; set PATH and import pyvips.
+
+	If not configured, show a small dialog to capture the path and persist it.
+	"""
+	# 1) Try settings
+	s = _load_settings_any()
+	raw = s.get("libvips_bin", "").strip()
+	bin_dir = raw
+	if not (bin_dir and os.path.isdir(bin_dir)):
+		# Maybe user stored the root path previously
+		bin_dir = VipshomeSetupDialog.derive_bin_dir(raw)
+	# 2) If not valid, prompt user once
+	if not (bin_dir and os.path.isdir(bin_dir)):
+		dlg = VipshomeSetupDialog()
+		if dlg.exec() != QDialog.DialogCode.Accepted:
+			# User cancelled: exit app cleanly
+			sys.exit(0)
+		sel = dlg.selected_bin()
+		if not sel:
+			sys.exit(0)
+		bin_dir = sel
+		_save_settings_merge({"libvips_bin": bin_dir})
+	# 3) Prepend to PATH and import pyvips
+	os.environ["PATH"] = bin_dir + ";" + os.environ.get("PATH", "")
+	# Import pyvips only now, after PATH is set
+	global pyvips
+	import pyvips  # type: ignore
+
+
 def main():
 	app = QApplication(sys.argv)
+	# ensure libvips is configured and pyvips is importable
+	_ensure_libvips_and_import_pyvips(app)
 	# apply the same stylesheet as the UI file
 	app.setStyleSheet(app_ui.QSS_TEMPLATE)
 
 	w = app_ui.MainWindow()
 
 	# ---------- settings: load/save default output folders ----------
-	SETTINGS_PATH = Path(__file__).resolve().parent / "tileCutter_settings.json"
+	SETTINGS_PATH = _settings_path()
 
 	def _load_settings() -> Dict[str, str]:
-		try:
-			with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
-				data = json.load(f) or {}
-				return {k: str(v) for k, v in data.items() if isinstance(v, (str, int))}
-		except Exception:
-			return {}
+		return _load_settings_any()
 
 	def _apply_settings_to_ui():
 		s = _load_settings()
@@ -556,8 +694,7 @@ def main():
 				"default_tiles_output_dir": getattr(w, "tiles_output_dir_input", None).text().strip()
 				if hasattr(w, "tiles_output_dir_input") and w.tiles_output_dir_input else "",
 			}
-			with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
-				json.dump(data, f, indent=2)
+			_save_settings_merge(data)
 		except Exception:
 			pass
 
