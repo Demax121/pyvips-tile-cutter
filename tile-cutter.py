@@ -15,6 +15,7 @@ os.environ["QT_IMAGEIO_MAXALLOC"] = str(2 * 1024 * 1024 * 1024)  # 2 GiB
 from typing import List, Optional, Dict
 from pathlib import Path
 import json
+import tempfile
 from PyQt6.QtWidgets import (
 	QApplication,
 	QFileDialog,
@@ -209,13 +210,12 @@ def make_fitting_image(window: app_ui.MainWindow, src: pyvips.Image, square_side
 		return src.resize(scale)
 
 
-def refresh_buffers(window: app_ui.MainWindow) -> None:
-	"""Recompute square_buffer and output_buffer based on selection and loaded image.
+def recompute_image_pipeline(window: app_ui.MainWindow) -> None:
+	"""Recompute the composited image pipeline based on selection and loaded image.
 
-	Produces:
+	Produces lightweight pyvips.Image graphs only (no in-memory encoded buffers):
 	- window.square_buffer: pyvips.Image (transparent square)
 	- window.output_image: pyvips.Image (composited)
-	- window.output_buffer: bytes (PNG-encoded composite)
 	"""
 	sel = get_selected_zoom_level(window)
 	if not sel:
@@ -251,7 +251,7 @@ def refresh_buffers(window: app_ui.MainWindow) -> None:
 		fitted = make_fitting_image(window, src_img, size)
 		composite = compose_centered(square, fitted)
 		setattr(window, "output_image", composite)
-		# Do not create in-memory encoded buffers here; keep only the composed image
+		# Ensure any legacy buffer attributes are cleared
 		if hasattr(window, "output_buffer"):
 			try:
 				delattr(window, "output_buffer")
@@ -287,7 +287,7 @@ def load_image_to_buffer(window: app_ui.MainWindow, path: str) -> None:
 		img = pyvips.Image.new_from_file(path, access=access_mode)
 		setattr(window, "loaded_image_vips", img)
 		auto_select_zoom_for_image(window, img.width, img.height)
-		refresh_buffers(window)
+		recompute_image_pipeline(window)
 	except Exception as e:
 		print("Failed to decode/process image with pyvips:", e)
 
@@ -370,77 +370,13 @@ def get_selected_quality(window: app_ui.MainWindow) -> int:
 		return 100
 
 
-def encode_output_image(img: pyvips.Image, fmt: str, quality: int) -> bytes:
-	"""Encode img to bytes in the requested format using quality where applicable.
+def save_image(img: pyvips.Image, path: str, fmt: str, quality: int) -> None:
+	"""Save image directly to a file using streaming encoders.
 
-	- png: map quality(1..100) to compression(9..0), keeping alpha
-	- webp: use Q=quality, keep alpha
-	- jpg: use Q=quality, flatten alpha to white background
+	Handles PNG/WebP/JPEG with proper quality/compression mapping and alpha.
 	"""
-	fmt = fmt.lower()
+	fmt = (fmt or "png").lower()
 
-	def _save_with_retry(image: pyvips.Image, method_name: str, *args, **kwargs):
-		try:
-			return getattr(image, method_name)(*args, **kwargs)
-		except Exception as e1:
-			# Retry by materializing to memory to avoid out-of-order read errors
-			try:
-				mem = image.copy_memory()
-				return getattr(mem, method_name)(*args, **kwargs)
-			except Exception:
-				raise e1
-	if fmt == "png":
-		# Map quality to PNG compression (inverse relation)
-		comp = int(round((100 - quality) * 9 / 99))
-		comp = max(0, min(9, comp))
-		rgba = ensure_rgba(img)
-		return _save_with_retry(rgba, "pngsave_buffer", compression=comp)
-	if fmt == "webp":
-		rgba = ensure_rgba(img)
-		return _save_with_retry(rgba, "webpsave_buffer", Q=quality)
-	if fmt in ("jpg", "jpeg"):
-		# JPEG does not support alpha; flatten over white background
-		base = img
-		if img.bands == 4:
-			try:
-				base = img.flatten(background=[255, 255, 255])
-			except Exception:
-				# Fallback: drop alpha (results in black where transparent)
-				base = img.extract_band(0, n=3)
-		elif img.bands > 3:
-			base = img.extract_band(0, n=3)
-		elif img.bands < 3:
-			# expand to RGB
-			g = img.extract_band(0)
-			base = pyvips.Image.bandjoin([g, g, g])
-		return _save_with_retry(base, "jpegsave_buffer", Q=quality)
-	# default png
-	rgba = ensure_rgba(img)
-	return _save_with_retry(rgba, "pngsave_buffer")
-
-
-def choose_effective_format(img: pyvips.Image, requested_fmt: str) -> str:
-	"""Return a safe output format considering encoder dimension limits.
-
-	- WebP fails above ~16383 px per side; fallback to PNG when exceeded.
-	- JPEG typically fails above ~65535 px per side; fallback to PNG when exceeded.
-	"""
-	fmt = (requested_fmt or "png").lower()
-	w, h = int(img.width), int(img.height)
-	# WebP constraint
-	if fmt == "webp" and (w >= 16384 or h >= 16384):
-		print("Requested WebP but image is too large for WebP; falling back to PNG.")
-		return "png"
-	# JPEG constraint
-	if fmt in ("jpg", "jpeg") and (w >= 65536 or h >= 65536):
-		print("Requested JPEG but image is too large for JPEG; falling back to PNG.")
-		return "png"
-	return fmt
-
-
-def save_output_image_to_file(img: pyvips.Image, path: str, fmt: str, quality: int) -> None:
-	"""Save image directly to a file using streaming encoders to avoid RAM spikes."""
-	fmt = fmt.lower()
 	def _save_with_retry(image: pyvips.Image, method_name: str, *args, **kwargs):
 		try:
 			return getattr(image, method_name)(*args, **kwargs)
@@ -474,9 +410,31 @@ def save_output_image_to_file(img: pyvips.Image, path: str, fmt: str, quality: i
 			base = pyvips.Image.bandjoin([g, g, g])
 		_save_with_retry(base, "jpegsave", path, Q=quality)
 		return
-	# default png
+	# default to PNG
 	rgba = ensure_rgba(img)
 	_save_with_retry(rgba, "pngsave", path)
+
+
+def choose_effective_format(img: pyvips.Image, requested_fmt: str) -> str:
+	"""Return a safe output format considering encoder dimension limits.
+
+	- WebP fails above ~16383 px per side; fallback to PNG when exceeded.
+	- JPEG typically fails above ~65535 px per side; fallback to PNG when exceeded.
+	"""
+	fmt = (requested_fmt or "png").lower()
+	w, h = int(img.width), int(img.height)
+	# WebP constraint
+	if fmt == "webp" and (w >= 16384 or h >= 16384):
+		print("Requested WebP but image is too large for WebP; falling back to PNG.")
+		return "png"
+	# JPEG constraint
+	if fmt in ("jpg", "jpeg") and (w >= 65536 or h >= 65536):
+		print("Requested JPEG but image is too large for JPEG; falling back to PNG.")
+		return "png"
+	return fmt
+
+
+## removed: save_output_image_to_file (merged into save_image)
 
 def _get_tiles_layout(window: app_ui.MainWindow) -> str:
 	"""Return dzsave layout string from UI, defaulting to 'dz'."""
@@ -637,7 +595,32 @@ class VipshomeSetupDialog(QDialog):
 
 
 def _settings_path() -> Path:
-	return Path(__file__).resolve().parent / "tileCutter_settings.json"
+	return _app_dir() / "tileCutter_settings.json"
+
+
+def _app_dir() -> Path:
+	return Path(__file__).resolve().parent
+
+
+def _ensure_app_default_dirs() -> Dict[str, str]:
+	"""Ensure default output directories exist under the app directory.
+
+	Returns a dict with keys default_image_output_dir and default_tiles_output_dir.
+	"""
+	img_dir = _app_dir() / "tileCutter-images"
+	tiles_dir = _app_dir() / "tileCutter-tiles"
+	try:
+		os.makedirs(img_dir, exist_ok=True)
+	except Exception:
+		pass
+	try:
+		os.makedirs(tiles_dir, exist_ok=True)
+	except Exception:
+		pass
+	return {
+		"default_image_output_dir": str(img_dir),
+		"default_tiles_output_dir": str(tiles_dir),
+	}
 
 
 def _load_settings_any() -> Dict[str, str]:
@@ -703,7 +686,17 @@ def main():
 	SETTINGS_PATH = _settings_path()
 
 	def _load_settings() -> Dict[str, str]:
-		return _load_settings_any()
+		# Merge app default dirs into settings if not already set
+		s = _load_settings_any()
+		defaults = _ensure_app_default_dirs()
+		changed = False
+		for k, v in defaults.items():
+			if not s.get(k):
+				s[k] = v
+				changed = True
+		if changed:
+			_save_settings_merge({k: s[k] for k in defaults.keys()})
+		return s
 
 	def _apply_settings_to_ui():
 		s = _load_settings()
@@ -743,7 +736,7 @@ def main():
 	# React to zoom level changes from the dropdown
 	def on_zoom_changed(_index: int):
 		try:
-			refresh_buffers(w)
+			recompute_image_pipeline(w)
 		except Exception as e:
 			print("Failed to refresh buffers on zoom change:", e)
 
@@ -834,7 +827,7 @@ def main():
 				fmt = choose_effective_format(output_img, requested_fmt)
 				base = os.path.splitext(os.path.basename(src_path))[0] if src_path else "output"
 				fname = os.path.join(default_dir, f"{base}{zoom_part}_transparentBG.{('jpg' if fmt == 'jpg' else fmt)}")
-				save_output_image_to_file(output_img, fname, fmt, quality)
+				save_image(output_img, fname, fmt, quality)
 				print(f"Saved image to: {fname}")
 				try:
 					w.show_done_banner("Image processing done", 3000)
@@ -867,7 +860,7 @@ def main():
 				# replace mismatched extension
 				fname = root + (".jpg" if fmt == "jpg" else f".{fmt}")
 		try:
-			save_output_image_to_file(output_img, fname, fmt, quality)
+			save_image(output_img, fname, fmt, quality)
 			print(f"Saved image to: {fname}")
 		finally:
 			try:
@@ -946,8 +939,18 @@ def main():
 
 		# dzsave will create the final tiles folder(s) based on layout and base_path
 		try:
-			def _do_dzsave(img_to_save: pyvips.Image):
-				img_to_save.dzsave(
+			# 1) Materialize the composited pipeline to a stable, uncompressed TIFF on disk
+			fd, tmp_tif = tempfile.mkstemp(prefix="tile_cutter_", suffix=".tif", dir=str(_app_dir()))
+			os.close(fd)
+			try:
+				# Save as uncompressed BigTIFF for robustness with large images
+				try:
+					output_img.tiffsave(tmp_tif, compression="none", bigtiff=True)
+				except Exception:
+					output_img.copy_memory().tiffsave(tmp_tif, compression="none", bigtiff=True)
+				# 2) Re-open from disk with random access and run dzsave
+				disk_img = pyvips.Image.new_from_file(tmp_tif, access="random")
+				disk_img.dzsave(
 					base_path,
 					layout=layout,
 					suffix=suffix,
@@ -956,35 +959,11 @@ def main():
 					skip_blanks=skip_blanks,
 					**fixed_opts,
 				)
-			# Attempt with memory-backed image first to maximize success
-			try:
-				mem = output_img.copy_memory()
-				_do_dzsave(mem)
-			except Exception as e1:
-				# Rebuild composite from random-access source and retry once more
+			finally:
 				try:
-					spath = getattr(w, "loaded_image_path", None)
-					if spath and os.path.isfile(spath):
-						# Recreate output image using a fresh random-access decode
-						img2 = pyvips.Image.new_from_file(spath, access="random")
-						# Regenerate buffers with this source
-						try:
-							setattr(w, "loaded_image_vips", img2)
-							# Keep current zoom selection; rebuild composite
-							refresh_buffers(w)
-							new_out = getattr(w, "output_image", None)
-							if new_out is not None:
-								mem2 = new_out.copy_memory()
-								_do_dzsave(mem2)
-							else:
-								raise e1
-						except Exception:
-							raise e1
-						# restore original loaded_image_vips if needed is not critical here
-					else:
-						raise e1
+					os.remove(tmp_tif)
 				except Exception:
-					raise e1
+					pass
 			# Determine likely created folder based on layout
 			candidates = []
 			if layout == "dz":
