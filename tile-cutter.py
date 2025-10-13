@@ -567,6 +567,13 @@ def _settings_path() -> Path:
 
 
 def _app_dir() -> Path:
+	# When frozen by PyInstaller (one-file), write next to the executable.
+	try:
+		if getattr(sys, "frozen", False) and hasattr(sys, "executable"):
+			return Path(sys.executable).resolve().parent
+	except Exception:
+		pass
+	# Fallback to the script directory during development
 	return Path(__file__).resolve().parent
 
 
