@@ -12,7 +12,7 @@ Startup flow changes:
 # Raise Qt image I/O allocation cap BEFORE importing any PyQt6 modules
 os.environ["QT_IMAGEIO_MAXALLOC"] = str(2 * 1024 * 1024 * 1024)  # 2 GiB
 
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from pathlib import Path
 import json
 import tempfile
@@ -391,13 +391,13 @@ def get_selected_quality(window: app_ui.MainWindow) -> int:
 		return 100
 
 
-def save_image(img: pyvips.Image, path: str, requested_fmt: str, quality: int) -> str:
+def save_image(img: pyvips.Image, path: str, requested_fmt: str, quality: int) -> Tuple[str, str]:
 	"""Save image using streaming encoders with format fallback and extension fix.
 
 	- Accepts a requested format (png/webp/jpg), but will fallback to PNG if the
 	  image exceeds encoder limits (e.g., WebP ~16k, JPEG ~65k).
 	- Ensures the file extension matches the final effective format.
-	- Returns the final saved file path.
+	- Returns (final_path, effective_format).
 	"""
 	req = (requested_fmt or "png").lower()
 	w, h = int(img.width), int(img.height)
@@ -421,12 +421,12 @@ def save_image(img: pyvips.Image, path: str, requested_fmt: str, quality: int) -
 		comp = int(round((100 - quality) * 9 / 99))
 		comp = max(0, min(9, comp))
 		rgba = ensure_rgba(img)
-		rgba.pngsave(path, compression=comp)
-		return path
+	rgba.pngsave(path, compression=comp)
+	return path, eff
 	if eff == "webp":
 		rgba = ensure_rgba(img)
-		rgba.webpsave(path, Q=quality)
-		return path
+	rgba.webpsave(path, Q=quality)
+	return path, eff
 	if eff == "jpg":
 		base = img
 		if img.bands == 4:
@@ -439,12 +439,12 @@ def save_image(img: pyvips.Image, path: str, requested_fmt: str, quality: int) -
 		elif img.bands < 3:
 			g = img.extract_band(0)
 			base = pyvips.Image.bandjoin([g, g, g])
-		base.jpegsave(path, Q=quality)
-		return path
+	base.jpegsave(path, Q=quality)
+	return path, eff
 	# Default fallback to PNG
 	rgba = ensure_rgba(img)
 	rgba.pngsave(path)
-	return path
+	return path, eff
 
 
 ## removed: save_output_image_to_file (merged into save_image)
@@ -794,10 +794,14 @@ def main():
 				os.makedirs(default_dir, exist_ok=True)
 				base = os.path.splitext(os.path.basename(src_path))[0] if src_path else "output"
 				fname = os.path.join(default_dir, f"{base}{zoom_part}_transparentBG.{requested_fmt}")
-				saved = save_image(output_img, fname, requested_fmt, quality)
+				saved, eff = save_image(output_img, fname, requested_fmt, quality)
 				print(f"Saved image to: {saved}")
+				# Show fallback banner or generic done banner (avoid overwrite)
 				try:
-					w.show_done_banner("Image processing done", 3000)
+					if requested_fmt.lower() == "webp" and eff != "webp":
+						w.show_done_banner("Image too big for .webp format, saving as .png instead", 4000)
+					else:
+						w.show_done_banner("Image processing done", 3000)
 				except Exception:
 					pass
 				return
@@ -816,13 +820,19 @@ def main():
 		if not fname:
 			return
 		try:
-			saved = save_image(output_img, fname, requested_fmt, quality)
+			saved, eff = save_image(output_img, fname, requested_fmt, quality)
 			print(f"Saved image to: {saved}")
-		finally:
+			# Show fallback banner or generic done banner (avoid overwrite)
 			try:
-				w.show_done_banner("Image processing done", 3000)
+				if requested_fmt.lower() == "webp" and eff != "webp":
+					w.show_done_banner("Image too big for .webp format, saving as .png instead", 4000)
+				else:
+					w.show_done_banner("Image processing done", 3000)
 			except Exception:
 				pass
+		except Exception:
+			# re-raise after banner? keep printing only
+			raise
 
 	w.generate_image.clicked.connect(on_generate_image_clicked)
 
