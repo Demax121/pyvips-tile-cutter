@@ -89,6 +89,41 @@ def get_selected_zoom_level(window: app_ui.MainWindow) -> Optional[dict]:
 		return None
 
 
+def get_selected_zoom_index(window: app_ui.MainWindow) -> Optional[int]:
+	"""Return zero-based zoom level index or None if not selected."""
+	try:
+		idx = int(window.zoom_levels.currentIndex()) - 1
+		if idx < 0:
+			return None
+		if hasattr(window, "zoom_levels_table") and 0 <= idx < len(window.zoom_levels_table):
+			return idx
+	except Exception:
+		pass
+	return None
+
+
+def _is_zoom_selected(window: app_ui.MainWindow) -> bool:
+	try:
+		return int(window.zoom_levels.currentIndex()) > 0
+	except Exception:
+		return False
+
+
+def _ensure_zoom_selected(window: app_ui.MainWindow) -> bool:
+	"""Warn and return False if the placeholder 'Choose zoom level' is selected."""
+	if _is_zoom_selected(window):
+		return True
+	try:
+		QMessageBox.warning(
+			None,
+			"Zoom level required",
+			"Please choose a Zoom level before generating images or tiles.",
+		)
+	except Exception:
+		print("Please choose a Zoom level before generating images or tiles.")
+	return False
+
+
 def auto_select_zoom_for_image(window: app_ui.MainWindow, img_w: int, img_h: int) -> None:
 	"""Pick the smallest zoom whose square can contain the image and select it."""
 	if not hasattr(window, "zoom_levels_table"):
@@ -751,6 +786,9 @@ def main():
 
 	# Hook Generate Image button: use default directory when set, otherwise prompt
 	def on_generate_image_clicked():
+		# Validate zoom selection first
+		if not _ensure_zoom_selected(w):
+			return
 		# Indicate processing start in the top banner
 		try:
 			w.show_processing_banner("Image processing")
@@ -781,22 +819,24 @@ def main():
 			"jpg": "JPEG Image (*.jpg *.jpeg)",
 			"webp": "WebP Image (*.webp)",
 		}
-		# Build default filename from input with _transparentBG suffix
+		# Build default filename from input with Zoom and _transparentBG suffix
 		src_path = getattr(w, "loaded_image_path", None)
+		zidx = get_selected_zoom_index(w)
+		zoom_part = f"-Zoom-{zidx}" if zidx is not None else ""
 		if src_path:
 			base = os.path.splitext(os.path.basename(src_path))[0]
 			initial_dir = os.path.dirname(src_path) or os.path.expanduser("~")
-			initial_name = f"{base}_transparentBG.{('jpg' if requested_fmt == 'jpg' else requested_fmt)}"
+			initial_name = f"{base}{zoom_part}_transparentBG.{('jpg' if requested_fmt == 'jpg' else requested_fmt)}"
 			initial_path = os.path.join(initial_dir, initial_name)
 		else:
-			initial_path = os.path.join(os.path.expanduser("~"), f"output.{('jpg' if requested_fmt == 'jpg' else requested_fmt)}")
+			initial_path = os.path.join(os.path.expanduser("~"), f"output{zoom_part}_transparentBG.{('jpg' if requested_fmt == 'jpg' else requested_fmt)}")
 		if default_dir:
 			try:
 				os.makedirs(default_dir, exist_ok=True)
 				# Decide the actual format to use (fallback to PNG if too large for codec)
 				fmt = choose_effective_format(output_img, requested_fmt)
 				base = os.path.splitext(os.path.basename(src_path))[0] if src_path else "output"
-				fname = os.path.join(default_dir, f"{base}_transparentBG.{('jpg' if fmt == 'jpg' else fmt)}")
+				fname = os.path.join(default_dir, f"{base}{zoom_part}_transparentBG.{('jpg' if fmt == 'jpg' else fmt)}")
 				save_output_image_to_file(output_img, fname, fmt, quality)
 				print(f"Saved image to: {fname}")
 				try:
@@ -842,6 +882,9 @@ def main():
 
 	# Hook Generate Tiles button: use default directory when set, otherwise prompt
 	def on_generate_tiles_clicked():
+		# Validate zoom selection first
+		if not _ensure_zoom_selected(w):
+			return
 		# Indicate processing start in the top banner
 		try:
 			w.show_processing_banner("Image processing")
@@ -884,10 +927,12 @@ def main():
 				return
 		# Compute a clean base path for dzsave without suffixes
 		base_name = os.path.splitext(os.path.basename(src_path))[0] if src_path else "tiles"
-		base_path = os.path.join(chosen_dir, base_name)
+		zidx = get_selected_zoom_index(w)
+		zoom_part = f"-Zoom-{zidx}" if zidx is not None else ""
+		base_path = os.path.join(chosen_dir, f"{base_name}{zoom_part}")
 		# User-configurable options needed for naming
 		layout = _get_tiles_layout(w)
-		target_dir = os.path.join(chosen_dir, f"{base_name}-tiles-{layout}")
+		target_dir = os.path.join(chosen_dir, f"{base_name}{zoom_part}-tiles-{layout}")
 
 		# Fixed options
 		fixed_opts = {
@@ -958,14 +1003,14 @@ def main():
 					created_dir = c
 					break
 
-			# If not found, scan chosen_dir for a recent directory starting with base_name
+			# If not found, scan chosen_dir for a recent directory starting with base_name (with zoom)
 			if created_dir is None:
 				try:
 					import time
 					latest = (None, -1.0)
 					with os.scandir(chosen_dir) as it:
 						for entry in it:
-							if entry.is_dir() and entry.name.startswith(base_name):
+							if entry.is_dir() and entry.name.startswith(f"{base_name}{zoom_part}"):
 								mtime = entry.stat().st_mtime
 								if mtime > latest[1]:
 									latest = (entry.path, mtime)
