@@ -22,3 +22,7 @@ images
 *.db
 *.DS_Store
 *.log
+
+/tests
+/tileCutter-images-tests
+/tileCutter-tiles-tests

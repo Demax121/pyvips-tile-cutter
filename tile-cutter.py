@@ -180,7 +180,7 @@ def make_fitting_image(window: app_ui.MainWindow, src: pyvips.Image, square_side
 	spath = getattr(window, "loaded_image_path", None)
 	if spath and os.path.isfile(spath):
 		try:
-			# Fit within the square, preserving aspect ratio
+			# Fit within the square, preserving aspect ratio (no crop)
 			timg = pyvips.Image.thumbnail(spath, square_side, height=square_side)
 			return timg
 		except Exception as e:
@@ -305,7 +305,8 @@ def load_image_to_buffer(window: app_ui.MainWindow, path: str) -> None:
 		# Prefer random access for JPEGs to avoid out-of-order read issues later
 		ext = os.path.splitext(path)[1].lower()
 		access_mode = "random" if ext in (".jpg", ".jpeg") else "sequential"
-		img = pyvips.Image.new_from_file(path, access=access_mode)
+		# Ensure orientation matches what the user sees
+		img = pyvips.Image.new_from_file(path, access=access_mode, autorotate=True)
 		setattr(window, "loaded_image_vips", img)
 		auto_select_zoom_for_image(window, img.width, img.height)
 		recompute_image_pipeline(window)
@@ -421,13 +422,13 @@ def save_image(img: pyvips.Image, path: str, requested_fmt: str, quality: int) -
 		comp = int(round((100 - quality) * 9 / 99))
 		comp = max(0, min(9, comp))
 		rgba = ensure_rgba(img)
-	rgba.pngsave(path, compression=comp)
-	return path, eff
-	if eff == "webp":
+		rgba.pngsave(path, compression=comp, strip=True)
+		return path, eff
+	elif eff == "webp":
 		rgba = ensure_rgba(img)
-	rgba.webpsave(path, Q=quality)
-	return path, eff
-	if eff == "jpg":
+		rgba.webpsave(path, Q=quality, strip=True)
+		return path, eff
+	elif eff == "jpg":
 		base = img
 		if img.bands == 4:
 			try:
@@ -439,12 +440,13 @@ def save_image(img: pyvips.Image, path: str, requested_fmt: str, quality: int) -
 		elif img.bands < 3:
 			g = img.extract_band(0)
 			base = pyvips.Image.bandjoin([g, g, g])
-	base.jpegsave(path, Q=quality)
-	return path, eff
-	# Default fallback to PNG
-	rgba = ensure_rgba(img)
-	rgba.pngsave(path)
-	return path, eff
+		base.jpegsave(path, Q=quality, strip=True)
+		return path, eff
+	else:
+		# Default fallback to PNG
+		rgba = ensure_rgba(img)
+		rgba.pngsave(path, strip=True)
+		return path, eff
 
 
 ## removed: save_output_image_to_file (merged into save_image)
@@ -944,52 +946,38 @@ def main():
 
 		# dzsave will create the final tiles folder(s) based on layout and base_path
 		try:
-			# 1) Materialize the composited pipeline to a stable, uncompressed TIFF on disk
-			fd, tmp_tif = tempfile.mkstemp(prefix="tile_cutter_", suffix=".tif", dir=str(_app_dir()))
-			os.close(fd)
-			try:
-				# Save as uncompressed BigTIFF for robustness with large images
-				try:
-					output_img.tiffsave(tmp_tif, compression="none", bigtiff=True)
-				except Exception:
-					output_img.copy_memory().tiffsave(tmp_tif, compression="none", bigtiff=True)
-				# 2) Determine final directory (unique) and base path for dzsave
-				final_dir = _unique_path(target_dir)
-				if layout == "dz":
-					# dz creates '<base>_files' + '<base>.dzi' -> we rename to final_dir
-					base_for_dzsave = os.path.join(chosen_dir, f"{base_name}{zoom_part}")
-				else:
-					# other layouts write directly into the base directory
-					base_for_dzsave = final_dir
-				# Re-open from disk with random access and run dzsave
-				disk_img = pyvips.Image.new_from_file(tmp_tif, access="random")
-				disk_img.dzsave(
-					base_for_dzsave,
-					layout=layout,
-					suffix=suffix,
-					overlap=overlap,
-					region_shrink=region_shrink,
-					skip_blanks=skip_blanks,
-					**fixed_opts,
-				)
-				# For dz, move '<base>_files' to final_dir and include '.dzi' file
-				created_dir = None
-				extra_files = []
-				if layout == "dz":
-					created_dir = f"{base_for_dzsave}_files"
-					if not os.path.isdir(created_dir):
-						raise RuntimeError("dzsave output folder not found")
-					dzi = f"{base_for_dzsave}.dzi"
-					if os.path.isfile(dzi):
-						extra_files.append(dzi)
-				else:
-					# For non-dz layouts, dzsave wrote directly to final_dir
-					created_dir = final_dir
-			finally:
-				try:
-					os.remove(tmp_tif)
-				except Exception:
-					pass
+			# Determine final directory (unique) and base path for dzsave
+			final_dir = _unique_path(target_dir)
+			if layout == "dz":
+				# dz creates '<base>_files' + '<base>.dzi' -> we rename to final_dir
+				base_for_dzsave = os.path.join(chosen_dir, f"{base_name}{zoom_part}")
+			else:
+				# other layouts write directly into the base directory
+				base_for_dzsave = final_dir
+
+			# Stream directly from the composited pipeline
+			output_img.dzsave(
+				base_for_dzsave,
+				layout=layout,
+				suffix=suffix,
+				overlap=overlap,
+				region_shrink=region_shrink,
+				skip_blanks=skip_blanks,
+				**fixed_opts,
+			)
+			# For dz, move '<base>_files' to final_dir and include '.dzi' file
+			created_dir = None
+			extra_files = []
+			if layout == "dz":
+				created_dir = f"{base_for_dzsave}_files"
+				if not os.path.isdir(created_dir):
+					raise RuntimeError("dzsave output folder not found")
+				dzi = f"{base_for_dzsave}.dzi"
+				if os.path.isfile(dzi):
+					extra_files.append(dzi)
+			else:
+				# For non-dz layouts, dzsave wrote directly to final_dir
+				created_dir = final_dir
 
 			# Move/rename only for dz layout; non-dz already wrote to final_dir
 			if layout == "dz":
