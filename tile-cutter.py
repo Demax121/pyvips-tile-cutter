@@ -114,11 +114,8 @@ def _ensure_zoom_selected(window: app_ui.MainWindow) -> bool:
 	if _is_zoom_selected(window):
 		return True
 	try:
-		QMessageBox.warning(
-			None,
-			"Zoom level required",
-			"Please choose a Zoom level before generating images or tiles.",
-		)
+		# Use the in-app banner and auto-hide after 3s
+		window.show_done_banner("Please choose a Zoom level", 3000)
 	except Exception:
 		print("Please choose a Zoom level before generating images or tiles.")
 	return False
