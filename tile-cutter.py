@@ -574,6 +574,19 @@ def _app_dir() -> Path:
 	except Exception:
 		pass
 	# Fallback to the script directory during development
+	"""Return the application directory for settings and outputs.
+
+	- When frozen with PyInstaller (onefile), use the directory of the .exe,
+	  not the temporary extraction folder. This makes the build portable and
+	  keeps tileCutter_settings.json and output folders next to the exe.
+	- When running from source, use the folder containing this file.
+	"""
+	try:
+		if getattr(sys, "frozen", False):  # PyInstaller/Freezer
+			# sys.executable points to the .exe path; its parent is the exe dir
+			return Path(sys.executable).resolve().parent
+	except Exception:
+		pass
 	return Path(__file__).resolve().parent
 
 
