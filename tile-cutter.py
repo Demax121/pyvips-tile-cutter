@@ -411,25 +411,15 @@ def save_image(img: pyvips.Image, path: str, requested_fmt: str, quality: int) -
 	if not ext or ext.lower() != desired_ext:
 		path = root + desired_ext
 
-	def _save_with_retry(image: pyvips.Image, method_name: str, *args, **kwargs):
-		try:
-			return getattr(image, method_name)(*args, **kwargs)
-		except Exception as e1:
-			try:
-				mem = image.copy_memory()
-				return getattr(mem, method_name)(*args, **kwargs)
-			except Exception:
-				raise e1
-
 	if eff == "png":
 		comp = int(round((100 - quality) * 9 / 99))
 		comp = max(0, min(9, comp))
 		rgba = ensure_rgba(img)
-		_save_with_retry(rgba, "pngsave", path, compression=comp)
+		rgba.pngsave(path, compression=comp)
 		return path
 	if eff == "webp":
 		rgba = ensure_rgba(img)
-		_save_with_retry(rgba, "webpsave", path, Q=quality)
+		rgba.webpsave(path, Q=quality)
 		return path
 	if eff == "jpg":
 		base = img
@@ -443,11 +433,11 @@ def save_image(img: pyvips.Image, path: str, requested_fmt: str, quality: int) -
 		elif img.bands < 3:
 			g = img.extract_band(0)
 			base = pyvips.Image.bandjoin([g, g, g])
-		_save_with_retry(base, "jpegsave", path, Q=quality)
+		base.jpegsave(path, Q=quality)
 		return path
 	# Default fallback to PNG
 	rgba = ensure_rgba(img)
-	_save_with_retry(rgba, "pngsave", path)
+	rgba.pngsave(path)
 	return path
 
 
