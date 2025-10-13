@@ -90,30 +90,13 @@ def get_selected_zoom_level(window: app_ui.MainWindow) -> Optional[dict]:
 		return None
 
 
-def get_selected_zoom_index(window: app_ui.MainWindow) -> Optional[int]:
-	"""Return zero-based zoom level index or None if not selected."""
-	try:
-		idx = int(window.zoom_levels.currentIndex()) - 1
-		if idx < 0:
-			return None
-		if hasattr(window, "zoom_levels_table") and 0 <= idx < len(window.zoom_levels_table):
-			return idx
-	except Exception:
-		pass
-	return None
-
-
-def _is_zoom_selected(window: app_ui.MainWindow) -> bool:
-	try:
-		return int(window.zoom_levels.currentIndex()) > 0
-	except Exception:
-		return False
-
-
 def _ensure_zoom_selected(window: app_ui.MainWindow) -> bool:
 	"""Warn and return False if the placeholder 'Choose zoom level' is selected."""
-	if _is_zoom_selected(window):
-		return True
+	try:
+		if int(window.zoom_levels.currentIndex()) > 0:
+			return True
+	except Exception:
+		pass
 	try:
 		# Use the in-app banner and auto-hide after 3s
 		window.show_done_banner("Please choose a Zoom level", 3000)
@@ -275,7 +258,10 @@ def get_output_image(window: app_ui.MainWindow) -> Optional["pyvips.Image"]:
 		# recompute if possible
 		if getattr(window, "loaded_image_vips", None) is None:
 			return None
-		if not _is_zoom_selected(window):
+		try:
+			if int(window.zoom_levels.currentIndex()) <= 0:
+				return None
+		except Exception:
 			return None
 		recompute_image_pipeline(window)
 		return getattr(window, "output_image", None)
@@ -285,6 +271,26 @@ def get_output_image(window: app_ui.MainWindow) -> Optional["pyvips.Image"]:
 def is_image_file(path: str) -> bool:
 	ext = os.path.splitext(path)[1].lower()
 	return ext in (".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".gif")
+
+
+def _build_output_base(window: app_ui.MainWindow) -> Dict[str, str]:
+	"""Return a dict with base name/dir and zoom suffix for current selection.
+
+	Keys: base_name, base_dir (from source or home), zoom_part
+	"""
+	src_path = getattr(window, "loaded_image_path", None)
+	if src_path:
+		base_dir = os.path.dirname(src_path) or os.path.expanduser("~")
+		base_name = os.path.splitext(os.path.basename(src_path))[0]
+	else:
+		base_dir = os.path.expanduser("~")
+		base_name = "output"
+	try:
+		zidx_val = int(window.zoom_levels.currentIndex()) - 1
+		zoom_part = f"-Zoom-{zidx_val}" if zidx_val >= 0 else ""
+	except Exception:
+		zoom_part = ""
+	return {"base_name": base_name, "base_dir": base_dir, "zoom_part": zoom_part}
 
 
 def load_image_to_buffer(window: app_ui.MainWindow, path: str) -> None:
@@ -771,8 +777,11 @@ def main():
 		}
 		# Build default filename from input with Zoom and _transparentBG suffix
 		src_path = getattr(w, "loaded_image_path", None)
-		zidx = get_selected_zoom_index(w)
-		zoom_part = f"-Zoom-{zidx}" if zidx is not None else ""
+		try:
+			zidx_val = int(w.zoom_levels.currentIndex()) - 1
+			zoom_part = f"-Zoom-{zidx_val}" if zidx_val >= 0 else ""
+		except Exception:
+			zoom_part = ""
 		if src_path:
 			base = os.path.splitext(os.path.basename(src_path))[0]
 			initial_dir = os.path.dirname(src_path) or os.path.expanduser("~")
@@ -864,8 +873,11 @@ def main():
 				return
 		# Compute a clean base path for dzsave without suffixes
 		base_name = os.path.splitext(os.path.basename(src_path))[0] if src_path else "tiles"
-		zidx = get_selected_zoom_index(w)
-		zoom_part = f"-Zoom-{zidx}" if zidx is not None else ""
+		try:
+			zidx_val = int(w.zoom_levels.currentIndex()) - 1
+			zoom_part = f"-Zoom-{zidx_val}" if zidx_val >= 0 else ""
+		except Exception:
+			zoom_part = ""
 		base_path = os.path.join(chosen_dir, f"{base_name}{zoom_part}")
 		# User-configurable options needed for naming
 		# Inline tiles parameters from UI
@@ -1009,18 +1021,13 @@ def main():
 		pass
 	# Reset button clears the in-memory buffer and resets the viewer
 	def _reset():
-		if hasattr(w, "loaded_image_bytes"):
-			delattr(w, "loaded_image_bytes")
-		if hasattr(w, "loaded_image_vips"):
-			delattr(w, "loaded_image_vips")
-		if hasattr(w, "loaded_image_path"):
-			delattr(w, "loaded_image_path")
-		if hasattr(w, "square_buffer"):
-			delattr(w, "square_buffer")
-		if hasattr(w, "output_image"):
-			delattr(w, "output_image")
-		if hasattr(w, "output_buffer"):
-			delattr(w, "output_buffer")
+		# Use simple assignments to clear state
+		w.loaded_image_bytes = None
+		w.loaded_image_vips = None
+		w.loaded_image_path = None
+		w.square_buffer = None
+		w.output_image = None
+		w.output_buffer = None
 		# reset zoom dropdown to default (placeholder)
 		try:
 			w.zoom_levels.setCurrentIndex(0)
