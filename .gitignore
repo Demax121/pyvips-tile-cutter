@@ -1,1 +1,9 @@
 /images
+/__pycache__
+tile_gen.txt
+UI.txt
+/images/imagez
+/images/tiles
+tile-cutter.tar
+tile-cutter-python-ver.*
+tileCutter_settings.json

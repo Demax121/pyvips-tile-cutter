@@ -57,6 +57,8 @@ From the project root:
 python tile-cutter.py
 ```
 
+On first run, a small dialog will prompt you to select your libvips folder (either the root like `C:\\vips-dev-8.17` or its `bin` subfolder). The chosen path is saved to `tileCutter_settings.json` under the key `libvips_bin`. Subsequent runs skip this dialog.
+
 This launches the full app (UI + processing). You can also run the UI-only scaffold for design/testing:
 
 ```
@@ -150,5 +152,4 @@ python tile-cutter.py
 ```
 
 Because this variant expects the libvips DLLs at `..\bin`, running it from inside `libvips/tile-cutter-python-ver/` ensures `..\bin` correctly resolves to `libvips\bin`.
-
 
