@@ -54,6 +54,136 @@ ZOOM_LEVELS_DATA = {
 }
 
 
+def _update_command_previews(window: app_ui.MainWindow) -> None:
+	"""Update live preview of image and tiles commands in the UI, if present."""
+	try:
+		if not hasattr(window, "preview_image") and not hasattr(window, "preview_tiles"):
+			return
+	except Exception:
+		return
+
+	def _build_image_cmd() -> str:
+		try:
+			img = getattr(window, "output_image", None) or getattr(window, "loaded_image_vips", None)
+			if img is None:
+				return "No image loaded."
+			src_path = getattr(window, "loaded_image_path", None) or "<in-memory>"
+			fmt = get_selected_file_type(window)
+			q = get_selected_quality(window)
+			w_pixels, h_pixels = int(getattr(img, "width", 0) or 0), int(getattr(img, "height", 0) or 0)
+			# Estimate effective format as in save_image
+			req = (fmt or "png").lower()
+			if req == "webp" and (w_pixels >= 16384 or h_pixels >= 16384):
+				eff = "png"
+			elif req in ("jpg", "jpeg") and (w_pixels >= 65536 or h_pixels >= 65536):
+				eff = "png"
+			else:
+				eff = "jpg" if req in ("jpg", "jpeg") else req
+			# Compute quality/compression options
+			if eff == "png":
+				comp = int(round((100 - q) * 9 / 99))
+				comp = max(0, min(9, comp))
+				return f"pyvips.pngsave(<image>, 'output.{eff}', compression={comp}, strip=True)  # from {src_path}"
+			if eff == "webp":
+				return f"pyvips.webpsave(<image>, 'output.webp', Q={q}, strip=True)  # from {src_path}"
+			if eff == "jpg":
+				return f"pyvips.jpegsave(<image>, 'output.jpg', Q={q}, strip=True)  # from {src_path}"
+			return f"pyvips.pngsave(<image>, 'output.png', strip=True)  # from {src_path}"
+		except Exception:
+			return "(Unable to build image command preview)"
+
+	def _build_tiles_cmd() -> str:
+		try:
+			img = getattr(window, "output_image", None)
+			if img is None:
+				return "No image + zoom level selected."
+			src_path = getattr(window, "loaded_image_path", None) or "<in-memory composite>"
+			# Base name & zoom suffix
+			if getattr(window, "loaded_image_path", None):
+				base_name = os.path.splitext(os.path.basename(window.loaded_image_path))[0]
+			else:
+				base_name = "tiles"
+			try:
+				zidx_val = int(window.zoom_levels.currentIndex()) - 1
+				zoom_part = f"-Zoom-{zidx_val}" if zidx_val >= 0 else ""
+			except Exception:
+				zoom_part = ""
+			# Target dir (may be default or placeholder)
+			chosen_dir = ""
+			try:
+				if hasattr(window, "tiles_output_dir_input") and window.tiles_output_dir_input:
+					chosen_dir = window.tiles_output_dir_input.text().strip()
+			except Exception:
+				chosen_dir = ""
+			if not chosen_dir:
+				base_dir = os.path.dirname(getattr(window, "loaded_image_path", "")) or os.path.expanduser("~")
+				chosen_dir = os.path.join(base_dir, "<tiles-output>")
+			base_path = os.path.join(chosen_dir, f"{base_name}{zoom_part}")
+			# Layout
+			try:
+				layout = window.layout_options.value.lower().strip() or "dz"
+			except Exception:
+				layout = "dz"
+			# Tile size (always used)
+			try:
+				tile_size = int(getattr(window, "tile_size_value", None).value)
+			except Exception:
+				tile_size = 256
+			# File type / suffix
+			fmt = get_selected_file_type(window)
+			q = get_selected_quality(window)
+			if fmt == "webp":
+				suffix = f".webp[Q={q}]"
+			elif fmt in ("jpg", "jpeg"):
+				suffix = f".jpg[Q={q}]"
+			else:
+				comp = int(round((100 - q) * 9 / 99))
+				comp = max(0, min(9, comp))
+				suffix = f".png[compression={comp}]"
+			# Optional flags
+			parts = [
+				"vips dzsave",
+				str(src_path),
+				str(base_path),
+				"--centre",
+				"--depth onetile",
+				"--background 0",
+				f"--tile-size {tile_size}",
+				f"--layout {layout}",
+				f"--suffix '{suffix}'",
+			]
+			# Overlap
+			try:
+				if getattr(window, "change_overlap", None) and window.change_overlap.isChecked():
+					parts.append(f"--overlap {int(window.change_overlap_value.value)}")
+			except Exception:
+				pass
+			# region_shrink
+			try:
+				if getattr(window, "change_region_shrink", None) and window.change_region_shrink.isChecked():
+					mode = (window.change_region_shrink_mode.value or "mode").lower()
+					parts.append(f"--region-shrink {mode}")
+			except Exception:
+				pass
+			# skip_blanks
+			try:
+				if getattr(window, "skip_blanks", None) and window.skip_blanks.isChecked():
+					parts.append(f"--skip-blanks {int(window.skip_blanks_value.value)}")
+			except Exception:
+				pass
+			return " ".join(parts)
+		except Exception:
+			return "(Unable to build tiles command preview)"
+
+	try:
+		if hasattr(window, "preview_image"):
+			window.preview_image.setText(_build_image_cmd())
+		if hasattr(window, "preview_tiles"):
+			window.preview_tiles.setText(_build_tiles_cmd())
+	except Exception:
+		pass
+
+
 def load_zoom_levels_table() -> List[dict]:
 	"""Return table of zoom levels using embedded data.
 
@@ -248,6 +378,11 @@ def recompute_image_pipeline(window: app_ui.MainWindow) -> None:
 					delattr(window, attr)
 				except Exception:
 					pass
+	# Refresh command previews when the pipeline changes
+	try:
+		_update_command_previews(window)
+	except Exception:
+		pass
 
 def get_output_image(window: app_ui.MainWindow) -> Optional["pyvips.Image"]:
 	"""Return the current composited image, recomputing the pipeline if needed."""
@@ -345,6 +480,11 @@ def load_image_to_buffer(window: app_ui.MainWindow, path: str) -> None:
 				window.image_viewer.set_image(path)
 	except Exception as e:
 		print("Failed to display image:", e)
+	# Update previews after loading a new image
+	try:
+		_update_command_previews(window)
+	except Exception:
+		pass
 
 
 def open_file_dialog(window: app_ui.MainWindow) -> None:
@@ -727,6 +867,10 @@ def main():
 			recompute_image_pipeline(w)
 		except Exception as e:
 			print("Failed to refresh buffers on zoom change:", e)
+		try:
+			_update_command_previews(w)
+		except Exception:
+			pass
 
 	w.zoom_levels.currentIndexChanged.connect(on_zoom_changed)
 
@@ -759,6 +903,70 @@ def main():
 			w.image_output_dir_input.textChanged.connect(lambda _t: _save_settings_from_ui())
 		if hasattr(w, "tiles_output_dir_input"):
 			w.tiles_output_dir_input.textChanged.connect(lambda _t: _save_settings_from_ui())
+	except Exception:
+		pass
+
+	# Live command preview: recompute when relevant controls change
+	def _wire_preview_updates():
+		try:
+			_update_command_previews(w)
+		except Exception:
+			pass
+		# File/image related controls
+		try:
+			w.file_type.currentIndexChanged.connect(lambda _i: _wire_preview_updates())
+		except Exception:
+			pass
+		try:
+			w.image_quality.valueChanged.connect(lambda _v: _wire_preview_updates())
+		except Exception:
+			pass
+		try:
+			w.layout_options.currentIndexChanged.connect(lambda _i: _wire_preview_updates())
+		except Exception:
+			pass
+		# Tile size
+		try:
+			w.tile_size_value.valueChanged.connect(lambda _v: _wire_preview_updates())
+		except Exception:
+			pass
+		# Optional dzsave options
+		try:
+			w.change_overlap.toggled.connect(lambda _b: _wire_preview_updates())
+		except Exception:
+			pass
+		try:
+			w.change_overlap_value.valueChanged.connect(lambda _v: _wire_preview_updates())
+		except Exception:
+			pass
+		try:
+			w.change_region_shrink.toggled.connect(lambda _b: _wire_preview_updates())
+		except Exception:
+			pass
+		try:
+			w.change_region_shrink_mode.currentIndexChanged.connect(lambda _i: _wire_preview_updates())
+		except Exception:
+			pass
+		try:
+			w.skip_blanks.toggled.connect(lambda _b: _wire_preview_updates())
+		except Exception:
+			pass
+		try:
+			w.skip_blanks_value.valueChanged.connect(lambda _v: _wire_preview_updates())
+		except Exception:
+			pass
+		# Default output dirs text
+		try:
+			w.image_output_dir_input.textChanged.connect(lambda _t: _wire_preview_updates())
+		except Exception:
+			pass
+		try:
+			w.tiles_output_dir_input.textChanged.connect(lambda _t: _wire_preview_updates())
+		except Exception:
+			pass
+
+	try:
+		_wire_preview_updates()
 	except Exception:
 		pass
 
@@ -920,12 +1128,18 @@ def main():
 			layout = "dz"
 		target_dir = os.path.join(chosen_dir, f"{base_name}{zoom_part}-tiles-{layout}")
 
-		# Fixed options
+		# Fixed options – always passed to dzsave
+		try:
+			# tile_size is always used, but user can change its value
+			tile_size = int(getattr(w, "tile_size_value", None).value)
+		except Exception:
+			# fallback to vips default commonly used size
+			tile_size = 256
 		fixed_opts = {
 			"centre": True,
 			"depth": "onetile",
 			"background": 0,
-			"tile_size": 256,
+			"tile_size": tile_size,
 		}
 		# User-configurable options
 		# Suffix depends on selected file type and quality
@@ -939,30 +1153,27 @@ def main():
 			comp = int(round((100 - q) * 9 / 99))
 			comp = max(0, min(9, comp))
 			suffix = f".png[compression={comp}]"
-		# Overlap
+		# Overlap (optional) – added only when checkbox is enabled
+		overlap = None
 		try:
 			if getattr(w, "change_overlap", None) and w.change_overlap.isChecked():
 				overlap = int(w.change_overlap_value.value)
-			else:
-				overlap = 2
 		except Exception:
-			overlap = 2
-		# region_shrink
+			overlap = None
+		# region_shrink (optional)
+		region_shrink = None
 		try:
 			if getattr(w, "change_region_shrink", None) and w.change_region_shrink.isChecked():
 				region_shrink = (w.change_region_shrink_mode.value or "mode").lower()
-			else:
-				region_shrink = "mode"
 		except Exception:
-			region_shrink = "mode"
-		# skip_blanks
+			region_shrink = None
+		# skip_blanks (optional)
+		skip_blanks = None
 		try:
 			if getattr(w, "skip_blanks", None) and w.skip_blanks.isChecked():
 				skip_blanks = int(w.skip_blanks_value.value)
-			else:
-				skip_blanks = 5
 		except Exception:
-			skip_blanks = 5
+			skip_blanks = None
 
 		# dzsave will create the final tiles folder(s) based on layout and base_path
 		try:
@@ -975,15 +1186,22 @@ def main():
 				# other layouts write directly into the base directory
 				base_for_dzsave = final_dir
 
+			# Build dzsave options: required + optional flags
+			dz_opts = dict(fixed_opts)
+			dz_opts.update({
+				"layout": layout,
+				"suffix": suffix,
+			})
+			if overlap is not None:
+				dz_opts["overlap"] = overlap
+			if region_shrink is not None:
+				dz_opts["region_shrink"] = region_shrink
+			if skip_blanks is not None:
+				dz_opts["skip_blanks"] = skip_blanks
 			# Stream directly from the composited pipeline
 			output_img.dzsave(
 				base_for_dzsave,
-				layout=layout,
-				suffix=suffix,
-				overlap=overlap,
-				region_shrink=region_shrink,
-				skip_blanks=skip_blanks,
-				**fixed_opts,
+				**dz_opts,
 			)
 			# For dz, move '<base>_files' to final_dir and include '.dzi' file
 			created_dir = None

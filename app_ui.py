@@ -511,6 +511,13 @@ class MainWindow(QMainWindow):
         tiles_dir_box.setLayout(tiles_dir_row)
         controls_layout.addWidget(labeled("Default tiles output folder", tiles_dir_box))
 
+        # -------------- Tile size (always passed to dzsave) --------------
+        self.tile_size_value = IntSpinBox()
+        self.tile_size_value.setObjectName("tile_size_value")
+        self.tile_size_value.setRange(1, 4096)
+        self.tile_size_value.setValue(256)
+        controls_layout.addWidget(labeled("Tile size (pixels)", self.tile_size_value))
+
         # ---------- OPTIONAL section ----------
         opt_label = QLabel("OPTIONAL")
         opt_label.setProperty("role", "muted")
@@ -580,6 +587,43 @@ class MainWindow(QMainWindow):
         row_idx += 1
 
         controls_layout.addLayout(opt_grid)
+
+        # -------------- Command preview (read-only) --------------
+        preview_box = QFrame()
+        preview_layout = QVBoxLayout(preview_box)
+        preview_layout.setContentsMargins(0, 8, 0, 8)
+        preview_layout.setSpacing(4)
+
+        preview_title = QLabel("Command preview")
+        preview_title.setProperty("role", "muted")
+        preview_title.setStyleSheet("font-weight: 600;")
+        preview_layout.addWidget(preview_title)
+
+        # Image command
+        img_label = QLabel("Image command")
+        img_label.setProperty("role", "muted")
+        preview_layout.addWidget(img_label)
+
+        self.preview_image = QLabel("")
+        self.preview_image.setObjectName("preview_image")
+        self.preview_image.setWordWrap(True)
+        self.preview_image.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.preview_image.setStyleSheet("font-family: Consolas, 'Courier New', monospace; font-size: 11px;")
+        preview_layout.addWidget(self.preview_image)
+
+        # Tiles command
+        tiles_label = QLabel("Tiles command")
+        tiles_label.setProperty("role", "muted")
+        preview_layout.addWidget(tiles_label)
+
+        self.preview_tiles = QLabel("")
+        self.preview_tiles.setObjectName("preview_tiles")
+        self.preview_tiles.setWordWrap(True)
+        self.preview_tiles.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.preview_tiles.setStyleSheet("font-family: Consolas, 'Courier New', monospace; font-size: 11px;")
+        preview_layout.addWidget(self.preview_tiles)
+
+        controls_layout.addWidget(preview_box)
 
         # wire checkboxes to enable/disable their inputs
         self.change_overlap.toggled.connect(lambda v: self.change_overlap_value.setEnabled(v))
