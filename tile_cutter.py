@@ -37,6 +37,9 @@ try:
 except Exception:
 	pass
 
+# Global pyvips module - will be imported after PATH is configured
+pyvips = None
+
 
 # Embedded zoom levels table (in place of reading zoom_levels.json)
 # Source equivalent of dist/zoom_levels.json
@@ -70,7 +73,10 @@ def _update_command_previews(window: app_ui.MainWindow) -> None:
 			src_path = getattr(window, "loaded_image_path", None) or "<in-memory>"
 			fmt = get_selected_file_type(window)
 			q = get_selected_quality(window)
-			w_pixels, h_pixels = int(getattr(img, "width", 0) or 0), int(getattr(img, "height", 0) or 0)
+			try:
+				w_pixels, h_pixels = int(img.width), int(img.height)
+			except Exception:
+				return f"Image loaded from {src_path} (size unknown)"
 			# Estimate effective format as in save_image
 			req = (fmt or "png").lower()
 			if req == "webp" and (w_pixels >= 16384 or h_pixels >= 16384):
@@ -89,8 +95,8 @@ def _update_command_previews(window: app_ui.MainWindow) -> None:
 			if eff == "jpg":
 				return f"pyvips.jpegsave(<image>, 'output.jpg', Q={q}, strip=True)  # from {src_path}"
 			return f"pyvips.pngsave(<image>, 'output.png', strip=True)  # from {src_path}"
-		except Exception:
-			return "(Unable to build image command preview)"
+		except Exception as e:
+			return f"(Error building command preview: {str(e)[:40]})"
 
 	def _build_tiles_cmd() -> str:
 		try:
@@ -172,8 +178,8 @@ def _update_command_previews(window: app_ui.MainWindow) -> None:
 			except Exception:
 				pass
 			return " ".join(parts)
-		except Exception:
-			return "(Unable to build tiles command preview)"
+		except Exception as e:
+			return f"(Error building tiles preview: {str(e)[:40]})"
 
 	try:
 		if hasattr(window, "preview_image"):
@@ -254,13 +260,17 @@ def auto_select_zoom_for_image(window: app_ui.MainWindow, img_w: int, img_h: int
 		window.zoom_levels.blockSignals(False)
 
 
-def make_transparent_square(size: int) -> pyvips.Image:
+def make_transparent_square(size: int):
 	"""Create a transparent RGBA square of given size using pyvips."""
+	if pyvips is None:
+		raise RuntimeError("pyvips not initialized")
 	return pyvips.Image.black(size, size, bands=4)  # RGBA all zeros => transparent
 
 
-def ensure_rgba(img: pyvips.Image) -> pyvips.Image:
+def ensure_rgba(img):
 	"""Return an RGBA image. Replicates/joins bands as needed."""
+	if pyvips is None:
+		raise RuntimeError("pyvips not initialized")
 	b = img.bands
 	out = img
 	try:
@@ -287,8 +297,10 @@ def ensure_rgba(img: pyvips.Image) -> pyvips.Image:
 		return out
 
 
-def compose_centered(square: pyvips.Image, img: pyvips.Image) -> pyvips.Image:
+def compose_centered(square, img):
 	"""Insert img centered into square (both RGBA), returning composite image."""
+	if pyvips is None:
+		raise RuntimeError("pyvips not initialized")
 	base = square
 	src = ensure_rgba(img)
 	side = base.width  # square assumed
@@ -297,12 +309,14 @@ def compose_centered(square: pyvips.Image, img: pyvips.Image) -> pyvips.Image:
 	return base.insert(src, left, top, expand=False)
 
 
-def make_fitting_image(window: app_ui.MainWindow, src: pyvips.Image, square_side: int) -> pyvips.Image:
+def make_fitting_image(window: app_ui.MainWindow, src, square_side: int):
 	"""Return an image that fits entirely within square_side without upscaling.
 
 	Prefers libvips thumbnail-on-load for memory efficiency when the original
 	file path is available; otherwise falls back to a high-quality resize.
 	"""
+	if pyvips is None:
+		raise RuntimeError("pyvips not initialized")
 	max_side = max(src.width, src.height)
 	if max_side <= square_side:
 		return src
@@ -330,8 +344,10 @@ def recompute_image_pipeline(window: app_ui.MainWindow) -> None:
 	- window.square_buffer: pyvips.Image (transparent square)
 	- window.output_image: pyvips.Image (composited)
 	"""
+	print("recompute_image_pipeline: starting")
 	sel = get_selected_zoom_level(window)
 	if not sel:
+		print("recompute_image_pipeline: no zoom level selected, clearing buffers")
 		# clear when no selection
 		for attr in ("square_buffer", "output_image", "output_buffer"):
 			if hasattr(window, attr):
@@ -342,15 +358,20 @@ def recompute_image_pipeline(window: app_ui.MainWindow) -> None:
 		return
 
 	size = int(sel["size"])
+	print(f"recompute_image_pipeline: zoom size = {size}")
 	try:
 		square = make_transparent_square(size)
 		setattr(window, "square_buffer", square)
+		print(f"recompute_image_pipeline: created square buffer {size}x{size}")
 	except Exception as e:
 		print("Failed to create square buffer:", e)
+		import traceback
+		traceback.print_exc()
 		return
 
-	src_img: Optional[pyvips.Image] = getattr(window, "loaded_image_vips", None)
+	src_img = getattr(window, "loaded_image_vips", None)
 	if src_img is None:
+		print("recompute_image_pipeline: no source image loaded")
 		for attr in ("output_image", "output_buffer"):
 			if hasattr(window, attr):
 				try:
@@ -359,10 +380,13 @@ def recompute_image_pipeline(window: app_ui.MainWindow) -> None:
 					pass
 		return
 
+	print(f"recompute_image_pipeline: source image {src_img.width}x{src_img.height}")
 	try:
 		# Downscale if the selected square is smaller than the image
 		fitted = make_fitting_image(window, src_img, size)
+		print(f"recompute_image_pipeline: fitted image {fitted.width}x{fitted.height}")
 		composite = compose_centered(square, fitted)
+		print(f"recompute_image_pipeline: composite created {composite.width}x{composite.height}")
 		setattr(window, "output_image", composite)
 		# Ensure any legacy buffer attributes are cleared
 		if hasattr(window, "output_buffer"):
@@ -372,6 +396,8 @@ def recompute_image_pipeline(window: app_ui.MainWindow) -> None:
 				pass
 	except Exception as e:
 		print("Failed to compose centered image:", e)
+		import traceback
+		traceback.print_exc()
 		for attr in ("output_image", "output_buffer"):
 			if hasattr(window, attr):
 				try:
@@ -434,19 +460,45 @@ def load_image_to_buffer(window: app_ui.MainWindow, path: str) -> None:
 	We keep a bytes buffer on the window for later processing and call
 	the UI method to set the image for display.
 	"""
+	print(f"Loading image from: {path}")
 	# Record path and decode with pyvips directly from file
 	setattr(window, "loaded_image_path", path)
 	try:
+		if pyvips is None:
+			error_msg = "pyvips not initialized - libvips may not be configured correctly"
+			print(f"ERROR: {error_msg}")
+			raise RuntimeError(error_msg)
+		print(f"pyvips module available: {pyvips}")
 		# Prefer random access for JPEGs to avoid out-of-order read issues later
 		ext = os.path.splitext(path)[1].lower()
 		access_mode = "random" if ext in (".jpg", ".jpeg") else "sequential"
-		# Ensure orientation matches what the user sees
-		img = pyvips.Image.new_from_file(path, access=access_mode, autorotate=True)
+		print(f"Loading with access mode: {access_mode}")
+		# Try to load with autorotate first (for formats that support it)
+		# If that fails, try without autorotate (for formats like WebP that don't support it)
+		try:
+			img = pyvips.Image.new_from_file(path, access=access_mode, autorotate=True)
+			print(f"Image loaded with autorotate")
+		except Exception as e:
+			if "does not support optional argument autorotate" in str(e):
+				print(f"Format doesn't support autorotate, loading without it...")
+				img = pyvips.Image.new_from_file(path, access=access_mode)
+			else:
+				raise
+		print(f"Image loaded successfully: {img.width}x{img.height}, bands={img.bands}")
 		setattr(window, "loaded_image_vips", img)
+		print("Auto-selecting zoom level...")
 		auto_select_zoom_for_image(window, img.width, img.height)
+		print("Recomputing image pipeline...")
 		recompute_image_pipeline(window)
+		print("Image loading complete!")
 	except Exception as e:
-		print("Failed to decode/process image with pyvips:", e)
+		print(f"Failed to decode/process image with pyvips: {e}")
+		import traceback
+		traceback.print_exc()
+		try:
+			window.show_done_banner(f"Error loading image: {str(e)[:50]}", 5000)
+		except Exception:
+			pass
 
 	# Display: use QImageReader with scaled decode from file path (no in-memory buffers)
 	try:
@@ -532,7 +584,7 @@ def get_selected_quality(window: app_ui.MainWindow) -> int:
 		return 100
 
 
-def save_image(img: pyvips.Image, path: str, requested_fmt: str, quality: int) -> Tuple[str, str]:
+def save_image(img, path: str, requested_fmt: str, quality: int) -> Tuple[str, str]:
 	"""Save image using streaming encoders with format fallback and extension fix.
 
 	- Accepts a requested format (png/webp/jpg), but will fallback to PNG if the
@@ -540,6 +592,8 @@ def save_image(img: pyvips.Image, path: str, requested_fmt: str, quality: int) -
 	- Ensures the file extension matches the final effective format.
 	- Returns (final_path, effective_format).
 	"""
+	if pyvips is None:
+		raise RuntimeError("pyvips not initialized")
 	req = (requested_fmt or "png").lower()
 	w, h = int(img.width), int(img.height)
 	# Compute effective format considering size limits
@@ -776,29 +830,44 @@ def _ensure_libvips_and_import_pyvips(app: QApplication) -> None:
 
 	If not configured, show a small dialog to capture the path and persist it.
 	"""
+	print("=== libvips initialization ===")
 	# 1) Try settings
 	s = _load_settings_any()
 	raw = s.get("libvips_bin", "").strip()
+	print(f"Settings path: {_settings_path()}")
+	print(f"Stored libvips_bin: {raw}")
 	bin_dir = raw
 	if not (bin_dir and os.path.isdir(bin_dir)):
+		print(f"Stored path not valid, trying to derive...")
 		# Maybe user stored the root path previously
 		bin_dir = VipshomeSetupDialog.derive_bin_dir(raw)
+		print(f"Derived bin_dir: {bin_dir}")
 	# 2) If not valid, prompt user once
 	if not (bin_dir and os.path.isdir(bin_dir)):
+		print("No valid libvips path found, showing setup dialog...")
 		dlg = VipshomeSetupDialog()
 		if dlg.exec() != QDialog.DialogCode.Accepted:
 			# User cancelled: exit app cleanly
+			print("User cancelled libvips setup, exiting.")
 			sys.exit(0)
 		sel = dlg.selected_bin()
 		if not sel:
+			print("No path selected, exiting.")
 			sys.exit(0)
 		bin_dir = sel
+		print(f"User selected: {bin_dir}")
 		_save_settings_merge({"libvips_bin": bin_dir})
 	# 3) Prepend to PATH and import pyvips
+	print(f"Adding to PATH: {bin_dir}")
 	os.environ["PATH"] = bin_dir + ";" + os.environ.get("PATH", "")
+	print(f"Current PATH: {os.environ['PATH'][:200]}...")
 	# Import pyvips only now, after PATH is set
+	print("Importing pyvips...")
 	global pyvips
 	import pyvips  # type: ignore
+	print(f"pyvips imported successfully: {pyvips}")
+	print(f"pyvips version: {pyvips.version(0)}.{pyvips.version(1)}.{pyvips.version(2)}")
+	print("=== libvips initialization complete ===\n")
 
 
 def main():
@@ -1060,9 +1129,12 @@ def main():
 					w.show_done_banner("Image processing done", 3000)
 			except Exception:
 				pass
-		except Exception:
-			# re-raise after banner? keep printing only
-			raise
+		except Exception as e:
+			print(f"Failed to save image: {e}")
+			try:
+				w.show_done_banner(f"Error saving image: {str(e)[:50]}", 5000)
+			except Exception:
+				pass
 
 	w.generate_image.clicked.connect(on_generate_image_clicked)
 
@@ -1243,11 +1315,14 @@ def main():
 			else:
 				# Non-dz layouts already used final_dir as output
 				print(f"Tiles generated in: {final_dir}")
+			try:
+				w.show_done_banner("Tiles generated successfully", 3000)
+			except Exception:
+				pass
 		except Exception as e:
 			print("Failed to generate tiles:", e)
-		finally:
 			try:
-				w.show_done_banner("Image processing done", 3000)
+				w.show_done_banner(f"Error generating tiles: {str(e)[:50]}", 5000)
 			except Exception:
 				pass
 
